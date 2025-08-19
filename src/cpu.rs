@@ -41,23 +41,38 @@ pub fn get_cpu_metrics() -> Result<CpuMetrics, Box<dyn std::error::Error>> {
     let logical_cores = get_logical_cores()?;
     let cpu_brand = get_cpu_brand();
 
-    // Get CPU frequencies directly from IORegistry using IOKit
+    // Get CPU frequencies directly from IORegistry using IOKit (no system_profiler by default)
     let (ecpu_freqs_mhz, pcpu_freqs_mhz, chip_name_from_io) = iokit::get_cpu_frequencies()?;
 
-    // Try to get Apple Silicon specific info from system_profiler for core counts
-    let (chip_name_sp, ecpu_cores, pcpu_cores, cpu_freq) = get_apple_silicon_info();
+    // Prefer IOKit-provided chip name; avoid system_profiler by default
+    let mut chip_name = chip_name_from_io;
+    let mut ecpu_cores: Option<u32> = None;
+    let mut pcpu_cores: Option<u32> = None;
 
-    // Use chip name from system_profiler if available, otherwise from IOKit
-    let chip_name = chip_name_sp.or(chip_name_from_io);
-
-    // Use system_profiler frequency if available, otherwise use max freq from IORegistry
-    let cpu_frequency_mhz = cpu_freq
-        .or_else(|| {
-            pcpu_freqs_mhz
-                .as_ref()
-                .and_then(|f| f.last().copied().map(u64::from))
-        })
+    // Derive CPU frequency from IORegistry max P-core freq or sysctl fallback
+    let mut cpu_frequency_mhz = pcpu_freqs_mhz
+        .as_ref()
+        .and_then(|f| f.last().copied().map(u64::from))
         .unwrap_or_else(|| get_cpu_frequency().unwrap_or_else(|_| get_cpu_frequency_alt()));
+
+    // Fallback: only call system_profiler if we still lack useful info
+    if (chip_name.is_none() || chip_name.as_deref() == Some("Apple Processor"))
+        && cpu_frequency_mhz == 0
+    {
+        let (chip_sp, ec_sp, pc_sp, sp_freq) = get_apple_silicon_info();
+        if chip_name.is_none() {
+            chip_name = chip_sp;
+        }
+        if ecpu_cores.is_none() {
+            ecpu_cores = ec_sp;
+        }
+        if pcpu_cores.is_none() {
+            pcpu_cores = pc_sp;
+        }
+        if cpu_frequency_mhz == 0 {
+            cpu_frequency_mhz = sp_freq.unwrap_or(0);
+        }
+    }
 
     Ok(CpuMetrics {
         physical_cores,

@@ -262,19 +262,9 @@ pub fn get_gpu_frequencies() -> CpuFrequencyResult {
 pub fn get_cpu_frequencies() -> CpuFrequencyResult {
     let mut ecpu_freqs = None;
     let mut pcpu_freqs = None;
-    let mut chip_name = None;
+    let chip_name = None;
 
-    // Get chip info from system_profiler (optional, for display purposes)
-    if let Ok(output) = std::process::Command::new("system_profiler")
-        .args(["SPHardwareDataType", "-json"])
-        .output()
-        && let Ok(json_str) = std::str::from_utf8(&output.stdout)
-        && let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str)
-    {
-        chip_name = json["SPHardwareDataType"][0]["chip_type"]
-            .as_str()
-            .map(|s| s.to_string());
-    }
+    // Intentionally avoid system_profiler by default (performance). chip_name left as None.
 
     // Find pmgr device in IORegistry
     for (entry, name) in IOServiceIterator::new("AppleARMIODevice")? {
