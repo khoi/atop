@@ -13,7 +13,7 @@ pub struct MemoryMetrics {
 pub fn get_memory_metrics() -> Result<MemoryMetrics, Box<dyn std::error::Error>> {
     let (ram_usage, ram_total) = get_ram_info()?;
     let (swap_usage, swap_total) = get_swap_info()?;
-    
+
     Ok(MemoryMetrics {
         total: ram_total + swap_total,
         ram_total,
@@ -26,7 +26,6 @@ pub fn get_memory_metrics() -> Result<MemoryMetrics, Box<dyn std::error::Error>>
 fn get_ram_info() -> Result<(u64, u64), Box<dyn std::error::Error>> {
     let mut total = 0u64;
 
-    // Get total physical memory using sysctl
     unsafe {
         let mut name = [libc::CTL_HW, libc::HW_MEMSIZE];
         let mut size = mem::size_of::<u64>();
@@ -44,12 +43,10 @@ fn get_ram_info() -> Result<(u64, u64), Box<dyn std::error::Error>> {
         }
     }
 
-    // Get memory usage statistics
     let usage = unsafe {
         let mut count: u32 = libc::HOST_VM_INFO64_COUNT as _;
         let mut stats = mem::zeroed::<libc::vm_statistics64>();
 
-        #[allow(deprecated)]
         let ret_code = libc::host_statistics64(
             libc::mach_host_self(),
             libc::HOST_VM_INFO64,
@@ -63,9 +60,6 @@ fn get_ram_info() -> Result<(u64, u64), Box<dyn std::error::Error>> {
 
         let page_size_bytes = libc::sysconf(libc::_SC_PAGESIZE) as u64;
 
-        // Calculate used memory following macmon's formula
-        // This includes active, inactive, wired, speculative, and compressed pages
-        // but excludes purgeable and external pages
         (stats.active_count as u64
             + stats.inactive_count as u64
             + stats.wire_count as u64
