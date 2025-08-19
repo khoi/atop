@@ -47,6 +47,7 @@ fn get_ram_info() -> Result<(u64, u64), Box<dyn std::error::Error>> {
         let mut count: u32 = libc::HOST_VM_INFO64_COUNT as _;
         let mut stats = mem::zeroed::<libc::vm_statistics64>();
 
+        #[allow(deprecated)]
         let ret_code = libc::host_statistics64(
             libc::mach_host_self(),
             libc::HOST_VM_INFO64,
