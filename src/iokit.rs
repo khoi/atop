@@ -1,21 +1,19 @@
 use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
-use core_foundation::base::{
-    CFAllocatorRef, CFRelease, CFTypeRef, kCFAllocatorDefault, kCFAllocatorNull,
-};
-use core_foundation::data::{CFDataGetBytes, CFDataGetLength, CFDataRef};
+use core_foundation::base::TCFType;
+use core_foundation::base::{CFAllocatorRef, CFRelease, CFTypeRef, kCFAllocatorDefault};
+use core_foundation::data::{CFDataGetBytes, CFDataGetLength};
 use core_foundation::dictionary::{
     CFDictionaryCreateMutableCopy, CFDictionaryGetCount, CFDictionaryRef, CFMutableDictionaryRef,
 };
-use core_foundation::string::{
-    CFString, CFStringGetCString, CFStringRef, kCFStringEncodingUTF8,
-};
-use core_foundation::base::TCFType;
+use core_foundation::string::CFStringRef;
 use core_foundation_sys::base::CFRange;
 use serde::Serialize;
 use std::ffi::{CString, c_void};
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::MaybeUninit;
 use std::ptr::null;
+
+use crate::utils::{cf_dict_get_array, cf_dict_get_data, cf_string, cf_string_to_rust};
 
 // IOKit bindings
 #[link(name = "IOKit", kind = "framework")]
@@ -87,61 +85,13 @@ unsafe extern "C" {
     fn IOReportStateGetResidency(a: CFDictionaryRef, b: i32) -> i64;
 }
 
-// Helper to get a value from CF dictionary
-fn cfdict_get_val(dict: CFDictionaryRef, key: &str) -> Option<CFDataRef> {
-    use core_foundation::base::TCFType;
-    use core_foundation::string::CFString;
-    use core_foundation_sys::dictionary::CFDictionaryGetValue;
-
-    unsafe {
-        let cf_key = CFString::new(key);
-        let val = CFDictionaryGetValue(dict, cf_key.as_CFTypeRef() as _);
-
-        if val.is_null() {
-            None
-        } else {
-            Some(val as CFDataRef)
-        }
-    }
-}
-
 // IOReport utility functions
-
-// Create a CFString from a Rust string
-fn cfstr(val: &str) -> CFString {
-    CFString::new(val)
-}
-
-// Convert CFString to Rust String
-fn from_cfstr(cf_str: CFStringRef) -> String {
-    if cf_str.is_null() {
-        return String::new();
-    }
-
-    unsafe {
-        let mut buffer = [0u8; 256];
-        let success = CFStringGetCString(
-            cf_str,
-            buffer.as_mut_ptr() as *mut i8,
-            buffer.len() as isize,
-            kCFStringEncodingUTF8,
-        );
-
-        if success != 0 {
-            std::ffi::CStr::from_ptr(buffer.as_ptr() as *const i8)
-                .to_string_lossy()
-                .to_string()
-        } else {
-            String::new()
-        }
-    }
-}
 
 // Get channel group name
 fn get_channel_group(item: CFDictionaryRef) -> String {
     match unsafe { IOReportChannelGetGroup(item) } {
         x if x.is_null() => String::new(),
-        x => from_cfstr(x),
+        x => cf_string_to_rust(x),
     }
 }
 
@@ -149,7 +99,7 @@ fn get_channel_group(item: CFDictionaryRef) -> String {
 fn get_channel_subgroup(item: CFDictionaryRef) -> String {
     match unsafe { IOReportChannelGetSubGroup(item) } {
         x if x.is_null() => String::new(),
-        x => from_cfstr(x),
+        x => cf_string_to_rust(x),
     }
 }
 
@@ -157,7 +107,7 @@ fn get_channel_subgroup(item: CFDictionaryRef) -> String {
 fn get_channel_name(item: CFDictionaryRef) -> String {
     match unsafe { IOReportChannelGetChannelName(item) } {
         x if x.is_null() => String::new(),
-        x => from_cfstr(x),
+        x => cf_string_to_rust(x),
     }
 }
 
@@ -165,7 +115,7 @@ fn get_channel_name(item: CFDictionaryRef) -> String {
 fn get_unit_label(item: CFDictionaryRef) -> String {
     match unsafe { IOReportChannelGetUnitLabel(item) } {
         x if x.is_null() => String::new(),
-        x => from_cfstr(x).trim().to_string(),
+        x => cf_string_to_rust(x).trim().to_string(),
     }
 }
 
@@ -251,7 +201,7 @@ pub fn get_io_props(entry: u32) -> Result<CFDictionaryRef, Box<dyn std::error::E
 
 // Parse voltage-states binary data
 pub fn parse_dvfs_mhz(dict: CFDictionaryRef, key: &str) -> Option<Vec<u32>> {
-    let data = cfdict_get_val(dict, key)?;
+    let data = cf_dict_get_data(dict, key).ok()?;
 
     unsafe {
         let obj_len = CFDataGetLength(data);
@@ -381,7 +331,7 @@ pub struct IOReportIterator {
 
 impl IOReportIterator {
     pub fn new(data: CFDictionaryRef) -> Self {
-        let items = cfdict_get_val(data, "IOReportChannels").unwrap() as CFArrayRef;
+        let items = cf_dict_get_array(data, "IOReportChannels").unwrap();
         let items_size = unsafe { CFArrayGetCount(items) } as isize;
         Self {
             sample: data,
@@ -462,8 +412,8 @@ impl IOReport {
             let mut channel_dicts = Vec::new();
 
             for (group, subgroup) in groups {
-                let group_str = cfstr(group);
-                let subgroup_str = subgroup.map(cfstr);
+                let group_str = cf_string(group);
+                let subgroup_str = subgroup.map(cf_string);
 
                 let subgroup_ref = subgroup_str
                     .as_ref()
@@ -505,7 +455,7 @@ impl IOReport {
         };
 
         // Verify we got channels
-        if cfdict_get_val(channels, "IOReportChannels").is_none() {
+        if cf_dict_get_array(channels, "IOReportChannels").is_err() {
             return Err("Failed to get IOReport channels".into());
         }
 

@@ -3,6 +3,7 @@ mod iokit;
 mod ioreport_perf;
 mod memory;
 mod smc;
+mod utils;
 
 use cpu::CpuMetrics;
 use iokit::PowerMetrics;

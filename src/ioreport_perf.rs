@@ -1,14 +1,13 @@
-use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
-use core_foundation::base::{CFRelease, CFTypeRef, TCFType, kCFAllocatorDefault, kCFAllocatorNull};
+use crate::utils::{cf_dict_get_array, cf_string, cf_string_to_rust};
+use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex};
+use core_foundation::base::{CFRelease, CFTypeRef, TCFType, kCFAllocatorDefault};
 use core_foundation::dictionary::{
     CFDictionaryCreateMutableCopy, CFDictionaryGetCount, CFDictionaryGetValue, CFDictionaryRef,
     CFMutableDictionaryRef,
 };
 #[allow(unused_imports)]
 use core_foundation::number::{CFNumberCreate, CFNumberRef, kCFNumberSInt32Type};
-use core_foundation::string::{
-    CFString, CFStringGetCString, CFStringRef, kCFStringEncodingUTF8,
-};
+use core_foundation::string::{CFString, CFStringGetCString, CFStringRef, kCFStringEncodingUTF8};
 use std::ffi::c_void;
 use std::ptr::null;
 
@@ -74,7 +73,7 @@ fn cfnum(val: i32) -> CFNumberRef {
     }
 }
 
-fn cfstr(val: &str) -> CFString { CFString::new(val) }
+// NOTE: cfstr kept earlier; now using utils::cf_string instead
 
 fn from_cfstr(val: CFStringRef) -> String {
     unsafe {
@@ -209,15 +208,15 @@ fn create_channels(
     let mut channels = vec![];
 
     for (group, subgroup) in items {
-        let gname = cfstr(group);
-        let sname_opt = subgroup.map(cfstr);
+        let gname = cf_string(group);
+        let sname_opt = subgroup.map(cf_string);
         let sname_ref = sname_opt
             .as_ref()
             .map(|s| s.as_concrete_TypeRef())
             .unwrap_or(null());
-        let chan = unsafe { IOReportCopyChannelsInGroup(gname.as_concrete_TypeRef(), sname_ref, 0, 0, 0) };
+        let chan =
+            unsafe { IOReportCopyChannelsInGroup(gname.as_concrete_TypeRef(), sname_ref, 0, 0, 0) };
         channels.push(chan);
-
     }
 
     if channels.is_empty() {
@@ -281,8 +280,7 @@ fn parse_sample(data: CFDictionaryRef) -> PerformanceSample {
     let gpu_freqs = crate::cpu::get_gpu_freqs().unwrap_or_default();
 
     // Parse IOReport channels
-    if let Some(items) = cfdict_get_val(data, "IOReportChannels") {
-        let items = items as CFArrayRef;
+    if let Ok(items) = cf_dict_get_array(data, "IOReportChannels") {
         let count = unsafe { CFArrayGetCount(items) };
 
         for i in 0..count {
@@ -336,7 +334,7 @@ fn get_channel_group(item: CFDictionaryRef) -> String {
     if group.is_null() {
         String::new()
     } else {
-        from_cfstr(group)
+        cf_string_to_rust(group)
     }
 }
 
@@ -345,7 +343,7 @@ fn get_channel_subgroup(item: CFDictionaryRef) -> String {
     if subgroup.is_null() {
         String::new()
     } else {
-        from_cfstr(subgroup)
+        cf_string_to_rust(subgroup)
     }
 }
 
@@ -354,6 +352,6 @@ fn get_channel_name(item: CFDictionaryRef) -> String {
     if name.is_null() {
         String::new()
     } else {
-        from_cfstr(name)
+        cf_string_to_rust(name)
     }
 }
