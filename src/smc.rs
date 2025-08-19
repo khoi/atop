@@ -339,10 +339,18 @@ impl Smc {
             );
 
             if result != 0 {
-                return Err(format!("Failed to read key data for {} (IOKit error: {})", key, result).into());
+                return Err(format!(
+                    "Failed to read key data for {} (IOKit error: {})",
+                    key, result
+                )
+                .into());
             }
             if output.result != 0 {
-                return Err(format!("Failed to read key data for {} (SMC error: {})", key, output.result).into());
+                return Err(format!(
+                    "Failed to read key data for {} (SMC error: {})",
+                    key, output.result
+                )
+                .into());
             }
         }
 
@@ -869,7 +877,7 @@ impl Smc {
                             match self.read_key_data(&key, &info) {
                                 Ok(data) => {
                                     key_data.raw_bytes = data.clone();
-                                    
+
                                     // Try to parse the value
                                     match self.read_value(&key) {
                                         Ok(value) => {
@@ -1055,4 +1063,8 @@ pub fn get_comprehensive_smc_metrics() -> Result<ComprehensiveSMCMetrics, Box<dy
 pub fn get_all_smc_debug_data() -> Result<SmcDebugData, Box<dyn std::error::Error>> {
     let mut smc = Smc::new()?;
     smc.get_all_smc_data()
+}
+
+pub fn get_smc_connection() -> Result<Smc, Box<dyn std::error::Error>> {
+    Smc::new()
 }

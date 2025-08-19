@@ -4,9 +4,10 @@ mod memory;
 mod smc;
 
 use cpu::CpuMetrics;
+use iokit::PowerMetrics;
 use memory::MemoryMetrics;
 use serde::Serialize;
-use smc::{TemperatureMetrics, SmcDebugValue};
+use smc::{SmcDebugValue, TemperatureMetrics};
 use std::env;
 
 #[derive(Serialize)]
@@ -14,6 +15,7 @@ struct SystemMetrics {
     memory: MemoryMetrics,
     cpu: CpuMetrics,
     temperature: Option<TemperatureMetrics>,
+    power: Option<PowerMetrics>,
 }
 
 fn print_usage() {
@@ -83,11 +85,13 @@ fn main() {
                     println!("=== SMC Debug Data ===");
                     println!("Total Keys: {}", debug_data.total_keys);
                     println!("Successfully Read: {}\n", debug_data.keys.len());
-                    
+
                     for key_data in &debug_data.keys {
-                        println!("Key: {} (type: {}, size: {})", 
-                            key_data.key, key_data.type_str, key_data.size);
-                        
+                        println!(
+                            "Key: {} (type: {}, size: {})",
+                            key_data.key, key_data.type_str, key_data.size
+                        );
+
                         if let Some(ref value) = key_data.value {
                             print!("  Value: ");
                             match value {
@@ -102,7 +106,7 @@ fn main() {
                                 SmcDebugValue::Bytes(_) => println!("<binary data>"),
                             }
                         }
-                        
+
                         if !key_data.raw_bytes.is_empty() {
                             print!("  Raw: ");
                             for byte in &key_data.raw_bytes {
@@ -110,7 +114,7 @@ fn main() {
                             }
                             println!();
                         }
-                        
+
                         if let Some(ref error) = key_data.error {
                             println!("  Error: {}", error);
                         }
@@ -234,10 +238,21 @@ fn main() {
     // Get temperature metrics (optional, may fail without permissions)
     let temperature_metrics = smc::get_temperature_metrics().ok();
 
+    // Get power metrics (optional, may fail without permissions)
+    // First try to get SMC system power for fallback
+    let smc_sys_power = if let Ok(mut smc) = smc::get_smc_connection() {
+        smc.read_float("PSTR").ok()
+    } else {
+        None
+    };
+
+    let power_metrics = iokit::get_power_metrics(smc_sys_power).ok();
+
     let system_metrics = SystemMetrics {
         memory: memory_metrics,
         cpu: cpu_metrics,
         temperature: temperature_metrics,
+        power: power_metrics,
     };
 
     if json_output {
@@ -309,6 +324,21 @@ fn main() {
             );
         } else {
             println!("    Used: 0.0%");
+        }
+
+        if let Some(ref power) = system_metrics.power {
+            println!("\nPower Metrics:");
+            println!("  System Total: {:.2} W", power.sys_power);
+            println!("  CPU: {:.2} W", power.cpu_power);
+            println!("  GPU: {:.2} W", power.gpu_power);
+            if power.ane_power > 0.0 {
+                println!("  ANE (Neural Engine): {:.2} W", power.ane_power);
+            }
+            println!("  Memory: {:.2} W", power.ram_power);
+            if power.gpu_ram_power > 0.0 {
+                println!("  GPU Memory: {:.2} W", power.gpu_ram_power);
+            }
+            println!("  Combined (CPU+GPU+ANE): {:.2} W", power.all_power);
         }
     }
 }
