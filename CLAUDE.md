@@ -4,6 +4,8 @@
 
 `atop` is a sudoless comprehensive system metrics monitoring tool for macOS that retrieves CPU, memory, temperature, and power information using low-level system APIs and SMC (System Management Controller) access.
 
+Note: Apple Silicon only. Intel Macs are not supported.
+
 ## Architecture
 
 The codebase is a Rust CLI application with modular metric collection:
@@ -38,6 +40,7 @@ cargo clippy             # Run linter
 
 1. Always run `cargo clippy` and fix all the warnings before concluding the task.
 2. Remove all dead code
+3. Always test with `cargo run -- --json` and ensure all JSON values are non-null
 
 ## Key Implementation Details
 
