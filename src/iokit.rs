@@ -144,7 +144,7 @@ pub fn get_cpu_frequencies() -> CpuFrequencyResult {
     let mut pcpu_freqs = None;
     let mut chip_name = None;
 
-    // Get chip info from system_profiler first to determine scaling
+    // Get chip info from system_profiler (optional, for display purposes)
     if let Ok(output) = std::process::Command::new("system_profiler")
         .args(["SPHardwareDataType", "-json"])
         .output()
@@ -156,21 +156,27 @@ pub fn get_cpu_frequencies() -> CpuFrequencyResult {
             .map(|s| s.to_string());
     }
 
-    // Determine CPU frequency scale based on chip type
-    let cpu_scale = if let Some(ref name) = chip_name {
-        if name.contains("M1") || name.contains("M2") || name.contains("M3") {
-            1000 * 1000 // MHz for M1-M3
-        } else {
-            1000 // KHz for M4 and later
-        }
-    } else {
-        1000 * 1000 // Default to MHz
-    };
-
     // Find pmgr device in IORegistry
     for (entry, name) in IOServiceIterator::new("AppleARMIODevice")? {
         if name == "pmgr" {
             let props = get_io_props(entry)?;
+
+            // Get raw frequency values to determine scale
+            let mut cpu_scale = 1000 * 1000; // Default to Hz->MHz
+            
+            // Check a sample frequency to determine if values are in Hz or KHz
+            if let Some(sample_freqs) = parse_dvfs_mhz(props, "voltage-states1-sram")
+                .or_else(|| parse_dvfs_mhz(props, "voltage-states5-sram")) {
+                if let Some(&first_freq) = sample_freqs.first() {
+                    // If raw value is > 100 MHz (100_000_000 Hz), it's in Hz
+                    // If raw value is < 10 MHz (10_000 KHz), it's in KHz
+                    if first_freq > 100_000_000 {
+                        cpu_scale = 1000 * 1000; // Hz to MHz
+                    } else if first_freq < 10_000 {
+                        cpu_scale = 1000; // KHz to MHz
+                    }
+                }
+            }
 
             // Get efficiency core frequencies (voltage-states1-sram)
             if let Some(freqs) = parse_dvfs_mhz(props, "voltage-states1-sram") {
