@@ -757,11 +757,22 @@ impl Smc {
                 .read_temperature("TB0T")
                 .ok()
                 .or_else(|| self.read_temperature("B0TE").ok()),
-            cycle_count: match self.read_value("B0CT") {
-                Ok(SMCValue::U32(v)) => Some(v),
-                Ok(SMCValue::U16(v)) => Some(v as u32),
-                Ok(SMCValue::I16(v)) => Some(v as u32),
-                _ => None,
+            cycle_count: {
+                // B0CT (battery cycle count) appears to be stored in little-endian format
+                // unlike most other SMC values which are big-endian
+                if let Ok(info) = self.read_key_info("B0CT") {
+                    if let Ok(data) = self.read_key_data("B0CT", &info) {
+                        if data.len() >= 2 {
+                            Some(u16::from_le_bytes([data[0], data[1]]) as u32)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             },
             health_percent,
         }
