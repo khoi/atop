@@ -317,10 +317,11 @@ pub struct IOReportIterator {
     index: isize,
     items: CFArrayRef,
     items_size: isize,
+    duration_ms: u64,
 }
 
 impl IOReportIterator {
-    pub fn new(data: CFDictionaryRef) -> Self {
+    pub fn new(data: CFDictionaryRef, duration_ms: u64) -> Self {
         let items = cf_dict_get_array(data, "IOReportChannels").unwrap();
         let items_size = unsafe { CFArrayGetCount(items) } as isize;
         Self {
@@ -328,7 +329,12 @@ impl IOReportIterator {
             items,
             items_size,
             index: 0,
+            duration_ms,
         }
+    }
+
+    pub fn duration_ms(&self) -> u64 {
+        self.duration_ms
     }
 }
 
@@ -474,11 +480,12 @@ impl IOReport {
             // Take first sample
             let sample1 = IOReportCreateSamples(self.subscription, self.channels, null());
 
+            let start = std::time::Instant::now();
             // Wait for the specified duration
             std::thread::sleep(std::time::Duration::from_millis(duration_ms));
-
             // Take second sample
             let sample2 = IOReportCreateSamples(self.subscription, self.channels, null());
+            let elapsed_ms = start.elapsed().as_millis() as u64;
 
             // Calculate delta
             let delta = IOReportCreateSamplesDelta(sample1, sample2, null());
@@ -487,7 +494,7 @@ impl IOReport {
             CFRelease(sample1 as _);
             CFRelease(sample2 as _);
 
-            Ok(IOReportIterator::new(delta))
+            Ok(IOReportIterator::new(delta, elapsed_ms))
         }
     }
 }
@@ -522,13 +529,15 @@ pub fn get_power_metrics(
 
     // Take a 1000ms sample to get power readings
     let sample = ioreport.sample_power(1000)?;
+    let actual_duration_ms = sample.duration_ms();
 
     let mut metrics = PowerMetrics::default();
 
     // Process each channel in the sample
     for channel in sample {
         if channel.group == "Energy Model" {
-            let power_result = energy_to_watts(channel.item, &channel.unit, 1000);
+            // Use measured duration to convert energy to power; IOReport timing may drift slightly.
+            let power_result = energy_to_watts(channel.item, &channel.unit, actual_duration_ms);
 
             match power_result {
                 Ok(watts) => {
