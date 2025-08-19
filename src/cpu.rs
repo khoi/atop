@@ -1,5 +1,6 @@
 use crate::iokit;
 use serde::Serialize;
+use std::ffi::CString;
 use std::mem;
 use std::process::Command;
 
@@ -138,56 +139,43 @@ fn get_logical_cores() -> Result<u32, Box<dyn std::error::Error>> {
 }
 
 fn get_cpu_brand() -> String {
+    // Try fast path via sysctlbyname (Intel Macs)
     unsafe {
-        let mut mib = [libc::CTL_MACHDEP, 0];
-        let mut size = 0;
-
-        // Get the size needed for the brand string
-        let brand_name = c"machdep.cpu.brand_string";
-
-        let ret = libc::sysctlnametomib(brand_name.as_ptr(), mib.as_mut_ptr(), &mut { mib.len() });
-
-        if ret != 0 {
-            // Fall back to simple model name if brand_string is not available
-            return "Apple Processor".to_string();
+        if let Ok(name) = CString::new("machdep.cpu.brand_string") {
+            let mut size: libc::size_t = 0;
+            let ret = libc::sysctlbyname(
+                name.as_ptr(),
+                std::ptr::null_mut(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            );
+            if ret == 0 && size > 1 {
+                let mut buf = vec![0u8; size as usize];
+                let ret2 = libc::sysctlbyname(
+                    name.as_ptr(),
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    &mut size,
+                    std::ptr::null_mut(),
+                    0,
+                );
+                if ret2 == 0 {
+                    if let Some(pos) = buf.iter().position(|&b| b == 0) {
+                        buf.truncate(pos);
+                    }
+                    if let Ok(s) = std::str::from_utf8(&buf) {
+                        if !s.is_empty() {
+                            return s.to_string();
+                        }
+                    }
+                }
+            }
         }
-
-        // First get the size
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            2,
-            std::ptr::null_mut(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        );
-
-        if size == 0 {
-            return "Apple Processor".to_string();
-        }
-
-        // Now get the actual brand string
-        let mut brand = vec![0u8; size];
-        let ret = libc::sysctl(
-            mib.as_mut_ptr(),
-            2,
-            brand.as_mut_ptr() as *mut _,
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        );
-
-        if ret != 0 {
-            return "Apple Processor".to_string();
-        }
-
-        // Remove null terminator and convert to string
-        if let Some(null_pos) = brand.iter().position(|&c| c == 0) {
-            brand.truncate(null_pos);
-        }
-
-        String::from_utf8_lossy(&brand).to_string()
     }
+
+    // Fall back to system_profiler (Apple Silicon or missing key)
+    let (chip_name, _ec, _pc, _freq) = get_apple_silicon_info();
+    chip_name.unwrap_or_else(|| "Apple Processor".to_string())
 }
 
 fn get_cpu_frequency() -> Result<u64, Box<dyn std::error::Error>> {

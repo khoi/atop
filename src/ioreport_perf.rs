@@ -1,5 +1,5 @@
 use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
-use core_foundation::base::{CFRelease, CFTypeRef, kCFAllocatorDefault, kCFAllocatorNull};
+use core_foundation::base::{CFRelease, CFTypeRef, TCFType, kCFAllocatorDefault, kCFAllocatorNull};
 use core_foundation::dictionary::{
     CFDictionaryCreateMutableCopy, CFDictionaryGetCount, CFDictionaryGetValue, CFDictionaryRef,
     CFMutableDictionaryRef,
@@ -7,7 +7,7 @@ use core_foundation::dictionary::{
 #[allow(unused_imports)]
 use core_foundation::number::{CFNumberCreate, CFNumberRef, kCFNumberSInt32Type};
 use core_foundation::string::{
-    CFStringCreateWithBytesNoCopy, CFStringGetCString, CFStringRef, kCFStringEncodingUTF8,
+    CFString, CFStringGetCString, CFStringRef, kCFStringEncodingUTF8,
 };
 use std::ffi::c_void;
 use std::ptr::null;
@@ -74,18 +74,7 @@ fn cfnum(val: i32) -> CFNumberRef {
     }
 }
 
-fn cfstr(val: &str) -> CFStringRef {
-    unsafe {
-        CFStringCreateWithBytesNoCopy(
-            kCFAllocatorDefault,
-            val.as_ptr(),
-            val.len() as isize,
-            kCFStringEncodingUTF8,
-            0,
-            kCFAllocatorNull,
-        )
-    }
-}
+fn cfstr(val: &str) -> CFString { CFString::new(val) }
 
 fn from_cfstr(val: CFStringRef) -> String {
     unsafe {
@@ -101,10 +90,8 @@ fn from_cfstr(val: CFStringRef) -> String {
 
 fn cfdict_get_val(dict: CFDictionaryRef, key: &str) -> Option<CFTypeRef> {
     unsafe {
-        let key = cfstr(key);
-        let val = CFDictionaryGetValue(dict, key as _);
-        CFRelease(key as _);
-
+        let key = CFString::new(key);
+        let val = CFDictionaryGetValue(dict, key.as_CFTypeRef());
         if val.is_null() { None } else { Some(val) }
     }
 }
@@ -223,14 +210,14 @@ fn create_channels(
 
     for (group, subgroup) in items {
         let gname = cfstr(group);
-        let sname = subgroup.map_or(null(), cfstr);
-        let chan = unsafe { IOReportCopyChannelsInGroup(gname, sname, 0, 0, 0) };
+        let sname_opt = subgroup.map(cfstr);
+        let sname_ref = sname_opt
+            .as_ref()
+            .map(|s| s.as_concrete_TypeRef())
+            .unwrap_or(null());
+        let chan = unsafe { IOReportCopyChannelsInGroup(gname.as_concrete_TypeRef(), sname_ref, 0, 0, 0) };
         channels.push(chan);
 
-        unsafe { CFRelease(gname as _) };
-        if subgroup.is_some() {
-            unsafe { CFRelease(sname as _) };
-        }
     }
 
     if channels.is_empty() {

@@ -7,8 +7,9 @@ use core_foundation::dictionary::{
     CFDictionaryCreateMutableCopy, CFDictionaryGetCount, CFDictionaryRef, CFMutableDictionaryRef,
 };
 use core_foundation::string::{
-    CFStringCreateWithBytesNoCopy, CFStringGetCString, CFStringRef, kCFStringEncodingUTF8,
+    CFString, CFStringGetCString, CFStringRef, kCFStringEncodingUTF8,
 };
+use core_foundation::base::TCFType;
 use core_foundation_sys::base::CFRange;
 use serde::Serialize;
 use std::ffi::{CString, c_void};
@@ -107,17 +108,8 @@ fn cfdict_get_val(dict: CFDictionaryRef, key: &str) -> Option<CFDataRef> {
 // IOReport utility functions
 
 // Create a CFString from a Rust string
-fn cfstr(val: &str) -> CFStringRef {
-    unsafe {
-        CFStringCreateWithBytesNoCopy(
-            kCFAllocatorDefault,
-            val.as_ptr(),
-            val.len() as isize,
-            kCFStringEncodingUTF8,
-            0,
-            kCFAllocatorNull,
-        )
-    }
+fn cfstr(val: &str) -> CFString {
+    CFString::new(val)
 }
 
 // Convert CFString to Rust String
@@ -457,11 +449,13 @@ impl IOReport {
             // Get all channels if no specific groups requested
             unsafe {
                 let all_channels = IOReportCopyAllChannels(0, 0);
-                CFDictionaryCreateMutableCopy(
+                let copy = CFDictionaryCreateMutableCopy(
                     kCFAllocatorDefault,
                     CFDictionaryGetCount(all_channels),
                     all_channels,
-                )
+                );
+                CFRelease(all_channels as _);
+                copy
             }
         } else {
             // Get specific channel groups
@@ -469,21 +463,23 @@ impl IOReport {
 
             for (group, subgroup) in groups {
                 let group_str = cfstr(group);
-                let subgroup_str = match subgroup {
-                    Some(sg) => cfstr(sg),
-                    None => null() as CFStringRef,
+                let subgroup_str = subgroup.map(cfstr);
+
+                let subgroup_ref = subgroup_str
+                    .as_ref()
+                    .map(|s| s.as_concrete_TypeRef())
+                    .unwrap_or(null() as CFStringRef);
+
+                let channels = unsafe {
+                    IOReportCopyChannelsInGroup(
+                        group_str.as_concrete_TypeRef(),
+                        subgroup_ref,
+                        0,
+                        0,
+                        0,
+                    )
                 };
-
-                let channels =
-                    unsafe { IOReportCopyChannelsInGroup(group_str, subgroup_str, 0, 0, 0) };
                 channel_dicts.push(channels);
-
-                unsafe {
-                    CFRelease(group_str as _);
-                    if !subgroup_str.is_null() {
-                        CFRelease(subgroup_str as _);
-                    }
-                }
             }
 
             // Merge all channel dictionaries
