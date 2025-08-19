@@ -33,8 +33,8 @@ fn get_ram_info() -> Result<(u64, u64), Box<dyn Error>> {
         let ret_code = libc::sysctl(
             name.as_mut_ptr(),
             name.len() as _,
-            &mut total as *mut _ as *mut _,
-            &mut size,
+            (&raw mut total).cast(),
+            &raw mut size,
             std::ptr::null_mut(),
             0,
         );
@@ -51,8 +51,8 @@ fn get_ram_info() -> Result<(u64, u64), Box<dyn Error>> {
         let ret_code = libc::host_statistics64(
             mach2::mach_init::mach_host_self(),
             libc::HOST_VM_INFO64,
-            &mut stats as *mut _ as *mut _,
-            &mut count,
+            (&raw mut stats).cast(),
+            &raw mut count,
         );
 
         if ret_code != mach2::kern_return::KERN_SUCCESS {
@@ -83,8 +83,8 @@ fn get_swap_info() -> Result<(u64, u64), Box<dyn Error>> {
         let ret_code = libc::sysctl(
             name.as_mut_ptr(),
             name.len() as _,
-            &mut xsw as *mut _ as *mut _,
-            &mut size,
+            (&raw mut xsw).cast(),
+            &raw mut size,
             std::ptr::null_mut(),
             0,
         );

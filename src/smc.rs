@@ -7,6 +7,9 @@ const SMC_CMD_READ_KEYINFO: u8 = 9;
 const SMC_CMD_READ_BYTES: u8 = 5;
 const SMC_CMD_READ_INDEX: u8 = 8;
 
+// IOKit error codes
+const KIORETURN_NOT_PRIVILEGED: i32 = -536_870_174;
+
 // SMC value types - dynamically determined
 #[derive(Debug, Clone)]
 pub enum SMCValue {
@@ -219,7 +222,7 @@ impl Smc {
                             connection,
                             key_cache: HashMap::new(),
                         });
-                    } else if result == -536870174 {
+                    } else if result == KIORETURN_NOT_PRIVILEGED {
                         // kIOReturnNotPrivileged
                         return Err("SMC access denied. Temperature monitoring may require elevated privileges on some systems.".into());
                     } else if result != 0 {
@@ -332,7 +335,7 @@ impl Smc {
                     }
                     keys.push(key);
                 }
-                Err(_) => continue,
+                Err(_) => {}
             }
         }
 
@@ -608,7 +611,7 @@ impl Smc {
         for key in &cpu_sensors {
             match self.read_temperature(key) {
                 Ok(temp) if temp > 0.0 && temp < 150.0 => temps.push(temp),
-                _ => continue,
+                _ => {}
             }
         }
 
@@ -628,7 +631,7 @@ impl Smc {
         for key in &gpu_sensors {
             match self.read_temperature(key) {
                 Ok(temp) if temp > 0.0 && temp < 150.0 => temps.push(temp),
-                _ => continue,
+                _ => {}
             }
         }
 
@@ -895,7 +898,7 @@ impl Smc {
 
                     keys_data.push(key_data);
                 }
-                Err(_) => continue,
+                Err(_) => {}
             }
         }
 

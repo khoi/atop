@@ -38,7 +38,7 @@ pub fn get_gpu_freqs() -> Result<Vec<u32>, Box<dyn std::error::Error>> {
 pub fn get_cpu_metrics() -> Result<CpuMetrics, Box<dyn std::error::Error>> {
     let physical_cores = get_physical_cores()?;
     let logical_cores = get_logical_cores()?;
-    let cpu_brand = get_cpu_brand()?;
+    let cpu_brand = get_cpu_brand();
 
     // Get CPU frequencies directly from IORegistry using IOKit
     let (ecpu_freqs_mhz, pcpu_freqs_mhz, chip_name_from_io) = iokit::get_cpu_frequencies()?;
@@ -54,9 +54,9 @@ pub fn get_cpu_metrics() -> Result<CpuMetrics, Box<dyn std::error::Error>> {
         .or_else(|| {
             pcpu_freqs_mhz
                 .as_ref()
-                .and_then(|f| f.last().copied().map(|v| v as u64))
+                .and_then(|f| f.last().copied().map(u64::from))
         })
-        .unwrap_or_else(|| get_cpu_frequency().unwrap_or(0));
+        .unwrap_or_else(|| get_cpu_frequency().unwrap_or_else(|_| get_cpu_frequency_alt()));
 
     Ok(CpuMetrics {
         physical_cores,
@@ -137,7 +137,7 @@ fn get_logical_cores() -> Result<u32, Box<dyn std::error::Error>> {
     }
 }
 
-fn get_cpu_brand() -> Result<String, Box<dyn std::error::Error>> {
+fn get_cpu_brand() -> String {
     unsafe {
         let mut mib = [libc::CTL_MACHDEP, 0];
         let mut size = 0;
@@ -149,7 +149,7 @@ fn get_cpu_brand() -> Result<String, Box<dyn std::error::Error>> {
 
         if ret != 0 {
             // Fall back to simple model name if brand_string is not available
-            return Ok("Apple Processor".to_string());
+            return "Apple Processor".to_string();
         }
 
         // First get the size
@@ -163,7 +163,7 @@ fn get_cpu_brand() -> Result<String, Box<dyn std::error::Error>> {
         );
 
         if size == 0 {
-            return Ok("Apple Processor".to_string());
+            return "Apple Processor".to_string();
         }
 
         // Now get the actual brand string
@@ -178,7 +178,7 @@ fn get_cpu_brand() -> Result<String, Box<dyn std::error::Error>> {
         );
 
         if ret != 0 {
-            return Ok("Apple Processor".to_string());
+            return "Apple Processor".to_string();
         }
 
         // Remove null terminator and convert to string
@@ -186,7 +186,7 @@ fn get_cpu_brand() -> Result<String, Box<dyn std::error::Error>> {
             brand.truncate(null_pos);
         }
 
-        Ok(String::from_utf8_lossy(&brand).to_string())
+        String::from_utf8_lossy(&brand).to_string()
     }
 }
 
@@ -207,14 +207,14 @@ fn get_cpu_frequency() -> Result<u64, Box<dyn std::error::Error>> {
 
         if ret != 0 || freq == 0 {
             // Try alternative method for Apple Silicon
-            return get_cpu_frequency_alt();
+            return Ok(get_cpu_frequency_alt());
         }
 
         Ok(freq / 1_000_000) // Convert to MHz
     }
 }
 
-fn get_cpu_frequency_alt() -> Result<u64, Box<dyn std::error::Error>> {
+fn get_cpu_frequency_alt() -> u64 {
     // Try to get CPU frequency max from sysctl
     unsafe {
         const HW_CPUFREQUENCY_MAX: i32 = 107;
@@ -232,12 +232,12 @@ fn get_cpu_frequency_alt() -> Result<u64, Box<dyn std::error::Error>> {
         );
 
         if ret == 0 && freq > 0 {
-            return Ok(freq / 1_000_000); // Convert to MHz
+            return freq / 1_000_000; // Convert to MHz
         }
     }
 
     // Return 0 to indicate unknown frequency
-    Ok(0)
+    0
 }
 
 fn get_apple_silicon_info() -> (Option<String>, Option<u32>, Option<u32>, Option<u64>) {
@@ -253,7 +253,7 @@ fn get_apple_silicon_info() -> (Option<String>, Option<u32>, Option<u32>, Option
         // Extract chip_type
         let chip_name = json["SPHardwareDataType"][0]["chip_type"]
             .as_str()
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         // Extract processor cores info
         let processor_info = json["SPHardwareDataType"][0]["number_processors"]
