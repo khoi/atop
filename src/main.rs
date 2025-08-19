@@ -1,6 +1,8 @@
 mod memory;
+mod cpu;
 
 use memory::MemoryMetrics;
+use cpu::CpuMetrics;
 use serde::Serialize;
 use serde_json;
 use std::env;
@@ -8,6 +10,7 @@ use std::env;
 #[derive(Serialize)]
 struct SystemMetrics {
     memory: MemoryMetrics,
+    cpu: CpuMetrics,
 }
 
 fn print_usage() {
@@ -51,8 +54,18 @@ fn main() {
         }
     };
 
+    // Get CPU metrics
+    let cpu_metrics = match cpu::get_cpu_metrics() {
+        Ok(metrics) => metrics,
+        Err(e) => {
+            eprintln!("Error getting CPU metrics: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     let system_metrics = SystemMetrics {
         memory: memory_metrics,
+        cpu: cpu_metrics,
     };
 
     if json_output {
@@ -61,7 +74,22 @@ fn main() {
         println!("{}", json);
     } else {
         // Output as human-readable text
-        println!("Memory Metrics:");
+        println!("CPU Metrics:");
+        if let Some(ref chip) = system_metrics.cpu.chip_name {
+            println!("  Chip: {}", chip);
+        }
+        println!("  Brand: {}", system_metrics.cpu.cpu_brand);
+        println!("  Physical Cores: {}", system_metrics.cpu.physical_cores);
+        println!("  Logical Cores: {}", system_metrics.cpu.logical_cores);
+        if let Some(ecpu) = system_metrics.cpu.ecpu_cores {
+            println!("  Efficiency Cores: {}", ecpu);
+        }
+        if let Some(pcpu) = system_metrics.cpu.pcpu_cores {
+            println!("  Performance Cores: {}", pcpu);
+        }
+        println!("  Frequency: {} MHz", system_metrics.cpu.cpu_frequency_mhz);
+        
+        println!("\nMemory Metrics:");
         println!("  RAM:");
         println!("    Total: {:.2} GB", system_metrics.memory.ram_total as f64 / (1024.0 * 1024.0 * 1024.0));
         println!("    Usage: {:.2} GB", system_metrics.memory.ram_usage as f64 / (1024.0 * 1024.0 * 1024.0));
