@@ -1,16 +1,19 @@
 mod cpu;
 mod iokit;
 mod memory;
+mod smc;
 
 use cpu::CpuMetrics;
 use memory::MemoryMetrics;
 use serde::Serialize;
+use smc::TemperatureMetrics;
 use std::env;
 
 #[derive(Serialize)]
 struct SystemMetrics {
     memory: MemoryMetrics,
     cpu: CpuMetrics,
+    temperature: Option<TemperatureMetrics>,
 }
 
 fn print_usage() {
@@ -63,9 +66,13 @@ fn main() {
         }
     };
 
+    // Get temperature metrics (optional, may fail without permissions)
+    let temperature_metrics = smc::get_temperature_metrics().ok();
+
     let system_metrics = SystemMetrics {
         memory: memory_metrics,
         cpu: cpu_metrics,
+        temperature: temperature_metrics,
     };
 
     if json_output {
@@ -88,6 +95,22 @@ fn main() {
             println!("  Performance Cores: {}", pcpu);
         }
         println!("  Frequency: {} MHz", system_metrics.cpu.cpu_frequency_mhz);
+
+        if let Some(ref temps) = system_metrics.temperature {
+            println!("\nTemperature Metrics:");
+            if let Some(cpu_temp) = temps.cpu_temp {
+                println!("  CPU: {:.1}°C", cpu_temp);
+            }
+            if let Some(gpu_temp) = temps.gpu_temp {
+                println!("  GPU: {:.1}°C", gpu_temp);
+            }
+            if !temps.sensors.is_empty() && temps.sensors.len() > 2 {
+                println!("  Additional Sensors:");
+                for (name, temp) in &temps.sensors {
+                    println!("    {}: {:.1}°C", name, temp);
+                }
+            }
+        }
 
         println!("\nMemory Metrics:");
         println!("  RAM:");
