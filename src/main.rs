@@ -36,6 +36,10 @@ fn print_usage() {
     eprintln!("    --help      Print this help message");
 }
 
+fn is_macos() -> bool {
+    cfg!(target_os = "macos")
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -82,6 +86,11 @@ fn main() {
 
     // If debug SMC flag is set, show ALL SMC data
     if debug_smc {
+        if !is_macos() {
+            eprintln!("Error: SMC debug mode is only available on macOS");
+            std::process::exit(1);
+        }
+        
         match smc::get_all_smc_debug_data() {
             Ok(debug_data) => {
                 if json_output {
@@ -138,6 +147,11 @@ fn main() {
 
     // If nice SMC flag is set, show formatted SMC data
     if nice_smc {
+        if !is_macos() {
+            eprintln!("Error: SMC metrics are only available on macOS");
+            std::process::exit(1);
+        }
+        
         match smc::get_comprehensive_smc_metrics() {
             Ok(metrics) => {
                 if json_output {
@@ -241,23 +255,39 @@ fn main() {
         return;
     }
 
-    // Get temperature metrics (optional, may fail without permissions)
-    let temperature_metrics = smc::get_temperature_metrics().ok();
-
-    // Get power metrics (optional, may fail without permissions)
-    // First try to get SMC system power for fallback
-    let smc_sys_power = if let Ok(mut smc) = smc::get_smc_connection() {
-        smc.read_float("PSTR").ok()
+    // Get temperature metrics (optional, only available on macOS)
+    let temperature_metrics = if is_macos() {
+        smc::get_temperature_metrics().ok()
     } else {
         None
     };
 
-    let power_metrics = iokit::get_power_metrics(smc_sys_power).ok();
+    // Get power metrics (optional, only available on macOS)
+    // First try to get SMC system power for fallback
+    let smc_sys_power = if is_macos() {
+        if let Ok(mut smc) = smc::get_smc_connection() {
+            smc.read_float("PSTR").ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
-    // Get performance metrics (CPU/GPU frequency and utilization)
-    let perf_sample = if let Ok(perf_monitor) = IOReportPerf::new() {
-        // Sample for 250ms to get accurate readings
-        Some(perf_monitor.get_sample(250))
+    let power_metrics = if is_macos() {
+        iokit::get_power_metrics(smc_sys_power).ok()
+    } else {
+        None
+    };
+
+    // Get performance metrics (CPU/GPU frequency and utilization, macOS only)
+    let perf_sample = if is_macos() {
+        if let Ok(perf_monitor) = IOReportPerf::new() {
+            // Sample for 250ms to get accurate readings
+            Some(perf_monitor.get_sample(250))
+        } else {
+            None
+        }
     } else {
         None
     };

@@ -1,5 +1,7 @@
 use serde::Serialize;
 use std::error::Error;
+
+#[cfg(target_os = "macos")]
 use std::mem;
 
 #[derive(Debug, Default, Serialize)]
@@ -12,19 +14,33 @@ pub struct MemoryMetrics {
 }
 
 pub fn get_memory_metrics() -> Result<MemoryMetrics, Box<dyn Error>> {
-    let (ram_usage, ram_total) = get_ram_info()?;
-    let (swap_usage, swap_total) = get_swap_info()?;
+    #[cfg(target_os = "macos")]
+    {
+        let (ram_usage, ram_total) = get_ram_info_macos()?;
+        let (swap_usage, swap_total) = get_swap_info_macos()?;
 
-    Ok(MemoryMetrics {
-        total: ram_total + swap_total,
-        ram_total,
-        ram_usage,
-        swap_total,
-        swap_usage,
-    })
+        Ok(MemoryMetrics {
+            total: ram_total + swap_total,
+            ram_total,
+            ram_usage,
+            swap_total,
+            swap_usage,
+        })
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        get_memory_metrics_linux()
+    }
+    
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        Err("Unsupported platform".into())
+    }
 }
 
-fn get_ram_info() -> Result<(u64, u64), Box<dyn Error>> {
+#[cfg(target_os = "macos")]
+fn get_ram_info_macos() -> Result<(u64, u64), Box<dyn Error>> {
     let mut total = 0u64;
 
     unsafe {
@@ -74,7 +90,8 @@ fn get_ram_info() -> Result<(u64, u64), Box<dyn Error>> {
     Ok((usage, total))
 }
 
-fn get_swap_info() -> Result<(u64, u64), Box<dyn Error>> {
+#[cfg(target_os = "macos")]
+fn get_swap_info_macos() -> Result<(u64, u64), Box<dyn Error>> {
     unsafe {
         let mut name = [libc::CTL_VM, libc::VM_SWAPUSAGE];
         let mut size = mem::size_of::<libc::xsw_usage>();
@@ -95,4 +112,42 @@ fn get_swap_info() -> Result<(u64, u64), Box<dyn Error>> {
 
         Ok((xsw.xsu_used, xsw.xsu_total))
     }
+}
+
+#[cfg(target_os = "linux")]
+fn get_memory_metrics_linux() -> Result<MemoryMetrics, Box<dyn Error>> {
+    use std::fs;
+    
+    let meminfo = fs::read_to_string("/proc/meminfo")
+        .map_err(|_| "Failed to read /proc/meminfo")?;
+    
+    let mut mem_total = 0u64;
+    let mut mem_available = 0u64;
+    let mut swap_total = 0u64;
+    let mut swap_free = 0u64;
+    
+    for line in meminfo.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            let value = parts[1].parse::<u64>().unwrap_or(0) * 1024; // Convert KB to bytes
+            match parts[0] {
+                "MemTotal:" => mem_total = value,
+                "MemAvailable:" => mem_available = value,
+                "SwapTotal:" => swap_total = value,
+                "SwapFree:" => swap_free = value,
+                _ => {}
+            }
+        }
+    }
+    
+    let ram_usage = mem_total.saturating_sub(mem_available);
+    let swap_usage = swap_total.saturating_sub(swap_free);
+    
+    Ok(MemoryMetrics {
+        total: mem_total + swap_total,
+        ram_total: mem_total,
+        ram_usage,
+        swap_total,
+        swap_usage,
+    })
 }

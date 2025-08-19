@@ -1,7 +1,11 @@
+#[cfg(target_os = "macos")]
 use crate::iokit;
+
 use serde::Serialize;
-use std::mem;
 use std::process::Command;
+
+#[cfg(target_os = "macos")]
+use std::mem;
 
 #[derive(Debug, Default, Serialize)]
 pub struct CpuMetrics {
@@ -22,6 +26,7 @@ pub struct CpuInfo {
     pub pcpu_freqs_mhz: Vec<u32>,
 }
 
+#[cfg(target_os = "macos")]
 pub fn get_cpu_info() -> Result<CpuInfo, Box<dyn std::error::Error>> {
     let (ecpu_freqs_mhz, pcpu_freqs_mhz, _) = iokit::get_cpu_frequencies()?;
     Ok(CpuInfo {
@@ -30,15 +35,34 @@ pub fn get_cpu_info() -> Result<CpuInfo, Box<dyn std::error::Error>> {
     })
 }
 
+#[cfg(target_os = "macos")]
 pub fn get_gpu_freqs() -> Result<Vec<u32>, Box<dyn std::error::Error>> {
     let (_, gpu_freqs, _) = iokit::get_gpu_frequencies()?;
     Ok(gpu_freqs.unwrap_or_default())
 }
 
 pub fn get_cpu_metrics() -> Result<CpuMetrics, Box<dyn std::error::Error>> {
-    let physical_cores = get_physical_cores()?;
-    let logical_cores = get_logical_cores()?;
-    let cpu_brand = get_cpu_brand();
+    #[cfg(target_os = "macos")]
+    {
+        get_cpu_metrics_macos()
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        get_cpu_metrics_linux()
+    }
+    
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        Err("Unsupported platform".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn get_cpu_metrics_macos() -> Result<CpuMetrics, Box<dyn std::error::Error>> {
+    let physical_cores = get_physical_cores_macos()?;
+    let logical_cores = get_logical_cores_macos()?;
+    let cpu_brand = get_cpu_brand_macos();
 
     // Get CPU frequencies directly from IORegistry using IOKit
     let (ecpu_freqs_mhz, pcpu_freqs_mhz, chip_name_from_io) = iokit::get_cpu_frequencies()?;
@@ -56,7 +80,7 @@ pub fn get_cpu_metrics() -> Result<CpuMetrics, Box<dyn std::error::Error>> {
                 .as_ref()
                 .and_then(|f| f.last().copied().map(u64::from))
         })
-        .unwrap_or_else(|| get_cpu_frequency().unwrap_or_else(|_| get_cpu_frequency_alt()));
+        .unwrap_or_else(|| get_cpu_frequency_macos().unwrap_or_else(|_| get_cpu_frequency_alt()));
 
     Ok(CpuMetrics {
         physical_cores,
@@ -71,7 +95,8 @@ pub fn get_cpu_metrics() -> Result<CpuMetrics, Box<dyn std::error::Error>> {
     })
 }
 
-fn get_physical_cores() -> Result<u32, Box<dyn std::error::Error>> {
+#[cfg(target_os = "macos")]
+fn get_physical_cores_macos() -> Result<u32, Box<dyn std::error::Error>> {
     unsafe {
         // Try HW_PHYSICALCPU first
         const HW_PHYSICALCPU: i32 = 104;
@@ -114,7 +139,8 @@ fn get_physical_cores() -> Result<u32, Box<dyn std::error::Error>> {
     }
 }
 
-fn get_logical_cores() -> Result<u32, Box<dyn std::error::Error>> {
+#[cfg(target_os = "macos")]
+fn get_logical_cores_macos() -> Result<u32, Box<dyn std::error::Error>> {
     unsafe {
         let mut mib = [libc::CTL_HW, libc::HW_NCPU];
         let mut cores: i32 = 0;
@@ -137,7 +163,8 @@ fn get_logical_cores() -> Result<u32, Box<dyn std::error::Error>> {
     }
 }
 
-fn get_cpu_brand() -> String {
+#[cfg(target_os = "macos")]
+fn get_cpu_brand_macos() -> String {
     unsafe {
         let mut mib = [libc::CTL_MACHDEP, 0];
         let mut size = 0;
@@ -190,7 +217,8 @@ fn get_cpu_brand() -> String {
     }
 }
 
-fn get_cpu_frequency() -> Result<u64, Box<dyn std::error::Error>> {
+#[cfg(target_os = "macos")]
+fn get_cpu_frequency_macos() -> Result<u64, Box<dyn std::error::Error>> {
     unsafe {
         let mut mib = [libc::CTL_HW, libc::HW_CPU_FREQ];
         let mut freq: u64 = 0;
@@ -214,6 +242,7 @@ fn get_cpu_frequency() -> Result<u64, Box<dyn std::error::Error>> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn get_cpu_frequency_alt() -> u64 {
     // Try to get CPU frequency max from sysctl
     unsafe {
@@ -240,6 +269,7 @@ fn get_cpu_frequency_alt() -> u64 {
     0
 }
 
+#[cfg(target_os = "macos")]
 fn get_apple_silicon_info() -> (Option<String>, Option<u32>, Option<u32>, Option<u64>) {
     // Try to run system_profiler to get detailed chip info
     let output = Command::new("system_profiler")
@@ -288,4 +318,82 @@ fn get_apple_silicon_info() -> (Option<String>, Option<u32>, Option<u32>, Option
     }
 
     (None, None, None, None)
+}
+
+#[cfg(target_os = "linux")]
+fn get_cpu_metrics_linux() -> Result<CpuMetrics, Box<dyn std::error::Error>> {
+    use std::fs;
+    use std::collections::HashSet;
+    
+    let cpuinfo = fs::read_to_string("/proc/cpuinfo")
+        .map_err(|_| "Failed to read /proc/cpuinfo")?;
+    
+    let mut physical_cores = 0u32;
+    let mut logical_cores = 0u32;
+    let mut cpu_brand = String::from("Unknown");
+    let mut cpu_frequency_mhz = 0u64;
+    let mut core_ids = HashSet::new();
+    
+    // Parse /proc/cpuinfo
+    for line in cpuinfo.lines() {
+        if let Some((key, value)) = line.split_once(':') {
+            let key = key.trim();
+            let value = value.trim();
+            
+            match key {
+                "processor" => {
+                    logical_cores += 1;
+                }
+                "core id" => {
+                    if let Ok(core_id) = value.parse::<u32>() {
+                        core_ids.insert(core_id);
+                    }
+                }
+                "model name" => {
+                    if cpu_brand == "Unknown" {
+                        cpu_brand = value.to_string();
+                    }
+                }
+                "cpu MHz" => {
+                    if let Ok(freq) = value.parse::<f64>() {
+                        cpu_frequency_mhz = cpu_frequency_mhz.max(freq as u64);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    // Physical cores is the number of unique core IDs, or logical cores if core IDs not available
+    physical_cores = if core_ids.is_empty() {
+        logical_cores
+    } else {
+        core_ids.len() as u32
+    };
+    
+    // Try to get current frequency from /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq
+    if cpu_frequency_mhz == 0 {
+        if let Ok(freq_str) = fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq") {
+            if let Ok(freq_khz) = freq_str.trim().parse::<u64>() {
+                cpu_frequency_mhz = freq_khz / 1000; // Convert KHz to MHz
+            }
+        }
+    }
+    
+    // Fall back to a reasonable default if we couldn't detect frequency
+    if cpu_frequency_mhz == 0 {
+        cpu_frequency_mhz = 2000; // 2GHz default
+    }
+    
+    Ok(CpuMetrics {
+        physical_cores,
+        logical_cores,
+        cpu_brand,
+        cpu_frequency_mhz,
+        chip_name: None, // Not applicable on Linux
+        ecpu_cores: None, // Not applicable on Linux
+        pcpu_cores: None, // Not applicable on Linux
+        ecpu_freqs_mhz: None, // Not applicable on Linux
+        pcpu_freqs_mhz: None, // Not applicable on Linux
+    })
 }
