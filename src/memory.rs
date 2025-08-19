@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::error::Error;
 use std::mem;
 
 #[derive(Debug, Default, Serialize)]
@@ -10,7 +11,7 @@ pub struct MemoryMetrics {
     pub swap_usage: u64, // bytes
 }
 
-pub fn get_memory_metrics() -> Result<MemoryMetrics, Box<dyn std::error::Error>> {
+pub fn get_memory_metrics() -> Result<MemoryMetrics, Box<dyn Error>> {
     let (ram_usage, ram_total) = get_ram_info()?;
     let (swap_usage, swap_total) = get_swap_info()?;
 
@@ -23,7 +24,7 @@ pub fn get_memory_metrics() -> Result<MemoryMetrics, Box<dyn std::error::Error>>
     })
 }
 
-fn get_ram_info() -> Result<(u64, u64), Box<dyn std::error::Error>> {
+fn get_ram_info() -> Result<(u64, u64), Box<dyn Error>> {
     let mut total = 0u64;
 
     unsafe {
@@ -47,15 +48,14 @@ fn get_ram_info() -> Result<(u64, u64), Box<dyn std::error::Error>> {
         let mut count: u32 = libc::HOST_VM_INFO64_COUNT as _;
         let mut stats = mem::zeroed::<libc::vm_statistics64>();
 
-        #[allow(deprecated)]
         let ret_code = libc::host_statistics64(
-            libc::mach_host_self(),
+            mach2::mach_init::mach_host_self(),
             libc::HOST_VM_INFO64,
             &mut stats as *mut _ as *mut _,
             &mut count,
         );
 
-        if ret_code != 0 {
+        if ret_code != mach2::kern_return::KERN_SUCCESS {
             return Err("Failed to get memory stats".into());
         }
 
@@ -74,7 +74,7 @@ fn get_ram_info() -> Result<(u64, u64), Box<dyn std::error::Error>> {
     Ok((usage, total))
 }
 
-fn get_swap_info() -> Result<(u64, u64), Box<dyn std::error::Error>> {
+fn get_swap_info() -> Result<(u64, u64), Box<dyn Error>> {
     unsafe {
         let mut name = [libc::CTL_VM, libc::VM_SWAPUSAGE];
         let mut size = mem::size_of::<libc::xsw_usage>();
