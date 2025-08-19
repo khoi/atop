@@ -296,7 +296,7 @@ fn main() {
             println!("  Performance Cores: {}", pcpu);
         }
         println!("  Frequency: {} MHz", system_metrics.cpu.cpu_frequency_mhz);
-        
+
         // Performance metrics
         if let Some((freq, util)) = system_metrics.ecpu_usage {
             println!("  E-Core Usage: {} MHz ({:.1}%)", freq, util);

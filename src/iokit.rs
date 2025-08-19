@@ -295,24 +295,24 @@ pub type CpuFrequencyResult =
 // Get GPU frequencies from IORegistry
 pub fn get_gpu_frequencies() -> CpuFrequencyResult {
     let mut gpu_freqs = None;
-    
+
     // Try to get frequency info from pmgr device
     for (entry, name) in IOServiceIterator::new("AppleARMIODevice")? {
         if name == "pmgr" {
             let props = get_io_props(entry)?;
-            
+
             // GPU frequencies are in voltage-states9
             if let Some(freqs) = parse_dvfs_mhz(props, "voltage-states9") {
                 // Convert to MHz (from Hz)
                 let freqs_mhz: Vec<u32> = freqs.iter().map(|&f| f / 1_000_000).collect();
                 gpu_freqs = Some(freqs_mhz);
             }
-            
+
             unsafe { CFRelease(props as _) };
             break;
         }
     }
-    
+
     Ok((None, gpu_freqs, None))
 }
 

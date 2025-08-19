@@ -1,8 +1,8 @@
 use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
 use core_foundation::base::{CFRelease, CFTypeRef, kCFAllocatorDefault, kCFAllocatorNull};
 use core_foundation::dictionary::{
-    CFDictionaryCreateMutableCopy, CFDictionaryGetCount,
-    CFDictionaryGetValue, CFDictionaryRef, CFMutableDictionaryRef,
+    CFDictionaryCreateMutableCopy, CFDictionaryGetCount, CFDictionaryGetValue, CFDictionaryRef,
+    CFMutableDictionaryRef,
 };
 #[allow(unused_imports)]
 use core_foundation::number::{CFNumberCreate, CFNumberRef, kCFNumberSInt32Type};
@@ -65,7 +65,13 @@ unsafe extern "C" {
 
 #[allow(dead_code)]
 fn cfnum(val: i32) -> CFNumberRef {
-    unsafe { CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &val as *const i32 as _) }
+    unsafe {
+        CFNumberCreate(
+            kCFAllocatorDefault,
+            kCFNumberSInt32Type,
+            &val as *const i32 as _,
+        )
+    }
 }
 
 fn cfstr(val: &str) -> CFStringRef {
@@ -99,11 +105,7 @@ fn cfdict_get_val(dict: CFDictionaryRef, key: &str) -> Option<CFTypeRef> {
         let val = CFDictionaryGetValue(dict, key as _);
         CFRelease(key as _);
 
-        if val.is_null() {
-            None
-        } else {
-            Some(val)
-        }
+        if val.is_null() { None } else { Some(val) }
     }
 }
 
@@ -127,7 +129,7 @@ fn get_residencies(item: CFDictionaryRef) -> Vec<(String, i64)> {
 /// Calculate frequency and utilization from performance state residencies
 fn calc_freq(item: CFDictionaryRef, freqs: &[u32]) -> (u32, f32) {
     let items = get_residencies(item);
-    
+
     // Find the first active state (skip IDLE/DOWN/OFF states)
     let offset = items
         .iter()
@@ -137,7 +139,7 @@ fn calc_freq(item: CFDictionaryRef, freqs: &[u32]) -> (u32, f32) {
     // Calculate total active time and overall time
     let usage = items.iter().skip(offset).map(|x| x.1 as f64).sum::<f64>();
     let total = items.iter().map(|x| x.1 as f64).sum::<f64>();
-    
+
     if usage == 0.0 || total == 0.0 || freqs.is_empty() {
         return (0, 0.0);
     }
@@ -214,9 +216,11 @@ impl Drop for IOReportPerf {
 // Channel Creation and Subscription
 // ==============================================================================
 
-fn create_channels(items: Vec<(&str, Option<&str>)>) -> Result<CFMutableDictionaryRef, Box<dyn std::error::Error>> {
+fn create_channels(
+    items: Vec<(&str, Option<&str>)>,
+) -> Result<CFMutableDictionaryRef, Box<dyn std::error::Error>> {
     let mut channels = vec![];
-    
+
     for (group, subgroup) in items {
         let gname = cfstr(group);
         let sname = subgroup.map_or(null(), cfstr);
@@ -253,10 +257,12 @@ fn create_channels(items: Vec<(&str, Option<&str>)>) -> Result<CFMutableDictiona
     Ok(chan)
 }
 
-fn create_subscription(chan: CFMutableDictionaryRef) -> Result<IOReportSubscriptionRef, Box<dyn std::error::Error>> {
+fn create_subscription(
+    chan: CFMutableDictionaryRef,
+) -> Result<IOReportSubscriptionRef, Box<dyn std::error::Error>> {
     let mut dict: std::mem::MaybeUninit<CFMutableDictionaryRef> = std::mem::MaybeUninit::uninit();
     let subs = unsafe { IOReportCreateSubscription(null(), chan, dict.as_mut_ptr(), 0, null()) };
-    
+
     if subs.is_null() {
         return Err("Failed to create subscription".into());
     }
@@ -294,7 +300,7 @@ fn parse_sample(data: CFDictionaryRef) -> PerformanceSample {
 
         for i in 0..count {
             let item = unsafe { CFArrayGetValueAtIndex(items, i) } as CFDictionaryRef;
-            
+
             let group = get_channel_group(item);
             let subgroup = get_channel_subgroup(item);
             let channel = get_channel_name(item);
@@ -309,8 +315,11 @@ fn parse_sample(data: CFDictionaryRef) -> PerformanceSample {
             }
 
             // GPU Performance States
-            if group == "GPU Stats" && subgroup == "GPU Performance States"
-                && channel == "GPUPH" && !gpu_freqs.is_empty() {
+            if group == "GPU Stats"
+                && subgroup == "GPU Performance States"
+                && channel == "GPUPH"
+                && !gpu_freqs.is_empty()
+            {
                 // Skip the first frequency (idle state)
                 sample.gpu_usage = calc_freq(item, &gpu_freqs[1..]);
             }
@@ -319,13 +328,15 @@ fn parse_sample(data: CFDictionaryRef) -> PerformanceSample {
 
     // Average the per-core measurements
     if !ecpu_usages.is_empty() {
-        let avg_freq = ecpu_usages.iter().map(|x| x.0 as f32).sum::<f32>() / ecpu_usages.len() as f32;
+        let avg_freq =
+            ecpu_usages.iter().map(|x| x.0 as f32).sum::<f32>() / ecpu_usages.len() as f32;
         let avg_util = ecpu_usages.iter().map(|x| x.1).sum::<f32>() / ecpu_usages.len() as f32;
         sample.ecpu_usage = (avg_freq as u32, avg_util);
     }
 
     if !pcpu_usages.is_empty() {
-        let avg_freq = pcpu_usages.iter().map(|x| x.0 as f32).sum::<f32>() / pcpu_usages.len() as f32;
+        let avg_freq =
+            pcpu_usages.iter().map(|x| x.0 as f32).sum::<f32>() / pcpu_usages.len() as f32;
         let avg_util = pcpu_usages.iter().map(|x| x.1).sum::<f32>() / pcpu_usages.len() as f32;
         sample.pcpu_usage = (avg_freq as u32, avg_util);
     }

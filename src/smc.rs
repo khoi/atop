@@ -327,15 +327,12 @@ impl Smc {
         let mut keys = Vec::new();
 
         for i in 0..num_keys {
-            match self.read_key_by_index(i) {
-                Ok(key) => {
-                    // Filter out invalid keys
-                    if !key.chars().all(|c| c.is_ascii_graphic()) {
-                        continue;
-                    }
-                    keys.push(key);
+            if let Ok(key) = self.read_key_by_index(i) {
+                // Filter out invalid keys
+                if !key.chars().all(|c| c.is_ascii_graphic()) {
+                    continue;
                 }
-                Err(_) => {}
+                keys.push(key);
             }
         }
 
@@ -837,68 +834,65 @@ impl Smc {
 
         // Read all available keys
         for i in 0..num_keys {
-            match self.read_key_by_index(i) {
-                Ok(key) => {
-                    // Filter out invalid keys
-                    if !key.chars().all(|c| c.is_ascii_graphic()) || key.len() != 4 {
-                        continue;
-                    }
+            if let Ok(key) = self.read_key_by_index(i) {
+                // Filter out invalid keys
+                if !key.chars().all(|c| c.is_ascii_graphic()) || key.len() != 4 {
+                    continue;
+                }
 
-                    // Try to read key info and data
-                    let mut key_data = SmcKeyData {
-                        key: key.clone(),
-                        type_str: String::new(),
-                        size: 0,
-                        value: None,
-                        raw_bytes: Vec::new(),
-                        error: None,
-                    };
+                // Try to read key info and data
+                let mut key_data = SmcKeyData {
+                    key: key.clone(),
+                    type_str: String::new(),
+                    size: 0,
+                    value: None,
+                    raw_bytes: Vec::new(),
+                    error: None,
+                };
 
-                    match self.read_key_info(&key) {
-                        Ok(info) => {
-                            // Convert type to string
-                            let type_bytes = info.data_type.to_be_bytes();
-                            key_data.type_str = String::from_utf8_lossy(&type_bytes).to_string();
-                            key_data.size = info.data_size;
+                match self.read_key_info(&key) {
+                    Ok(info) => {
+                        // Convert type to string
+                        let type_bytes = info.data_type.to_be_bytes();
+                        key_data.type_str = String::from_utf8_lossy(&type_bytes).to_string();
+                        key_data.size = info.data_size;
 
-                            // Try to read the raw data
-                            match self.read_key_data(&key, &info) {
-                                Ok(data) => {
-                                    key_data.raw_bytes = data.clone();
+                        // Try to read the raw data
+                        match self.read_key_data(&key, &info) {
+                            Ok(data) => {
+                                key_data.raw_bytes = data.clone();
 
-                                    // Try to parse the value
-                                    match self.read_value(&key) {
-                                        Ok(value) => {
-                                            key_data.value = Some(match value {
-                                                SMCValue::Float(f) => SmcDebugValue::Float(f),
-                                                SMCValue::U8(v) => SmcDebugValue::U8(v),
-                                                SMCValue::U16(v) => SmcDebugValue::U16(v),
-                                                SMCValue::U32(v) => SmcDebugValue::U32(v),
-                                                SMCValue::I8(v) => SmcDebugValue::I8(v),
-                                                SMCValue::I16(v) => SmcDebugValue::I16(v),
-                                                SMCValue::Flag(b) => SmcDebugValue::Bool(b),
-                                                SMCValue::String(s) => SmcDebugValue::String(s),
-                                                SMCValue::Bytes(b) => SmcDebugValue::Bytes(b),
-                                            });
-                                        }
-                                        Err(e) => {
-                                            key_data.error = Some(format!("Parse error: {}", e));
-                                        }
+                                // Try to parse the value
+                                match self.read_value(&key) {
+                                    Ok(value) => {
+                                        key_data.value = Some(match value {
+                                            SMCValue::Float(f) => SmcDebugValue::Float(f),
+                                            SMCValue::U8(v) => SmcDebugValue::U8(v),
+                                            SMCValue::U16(v) => SmcDebugValue::U16(v),
+                                            SMCValue::U32(v) => SmcDebugValue::U32(v),
+                                            SMCValue::I8(v) => SmcDebugValue::I8(v),
+                                            SMCValue::I16(v) => SmcDebugValue::I16(v),
+                                            SMCValue::Flag(b) => SmcDebugValue::Bool(b),
+                                            SMCValue::String(s) => SmcDebugValue::String(s),
+                                            SMCValue::Bytes(b) => SmcDebugValue::Bytes(b),
+                                        });
+                                    }
+                                    Err(e) => {
+                                        key_data.error = Some(format!("Parse error: {}", e));
                                     }
                                 }
-                                Err(e) => {
-                                    key_data.error = Some(format!("Read error: {}", e));
-                                }
+                            }
+                            Err(e) => {
+                                key_data.error = Some(format!("Read error: {}", e));
                             }
                         }
-                        Err(e) => {
-                            key_data.error = Some(format!("Info error: {}", e));
-                        }
                     }
-
-                    keys_data.push(key_data);
+                    Err(e) => {
+                        key_data.error = Some(format!("Info error: {}", e));
+                    }
                 }
-                Err(_) => {}
+
+                keys_data.push(key_data);
             }
         }
 
