@@ -1,66 +1,58 @@
+mod memory;
+
 use clap::Parser;
-use serde::{Deserialize, Serialize};
+use memory::MemoryMetrics;
+use serde::Serialize;
 use serde_json;
 
 #[derive(Parser)]
 #[command(name = "atop")]
-#[command(about = "A CLI app that can output JSON", long_about = None)]
+#[command(about = "System memory metrics monitoring tool", long_about = None)]
 struct Args {
     /// Output as JSON
     #[arg(long)]
     json: bool,
 }
 
-#[derive(Serialize, Deserialize)]
-struct ExampleData {
-    id: u32,
-    name: String,
-    active: bool,
-    stats: Stats,
-    tags: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Stats {
-    cpu_usage: f64,
-    memory_mb: u64,
-    uptime_seconds: u64,
+#[derive(Serialize)]
+struct SystemMetrics {
+    memory: MemoryMetrics,
 }
 
 fn main() {
     let args = Args::parse();
 
-    // Example data structure
-    let example = ExampleData {
-        id: 42,
-        name: String::from("example-service"),
-        active: true,
-        stats: Stats {
-            cpu_usage: 45.7,
-            memory_mb: 1024,
-            uptime_seconds: 86400,
-        },
-        tags: vec![
-            String::from("production"),
-            String::from("critical"),
-            String::from("monitored"),
-        ],
+    // Get real memory metrics
+    let memory_metrics = match memory::get_memory_metrics() {
+        Ok(metrics) => metrics,
+        Err(e) => {
+            eprintln!("Error getting memory metrics: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let system_metrics = SystemMetrics {
+        memory: memory_metrics,
     };
 
     if args.json {
         // Output as JSON
-        let json = serde_json::to_string_pretty(&example).unwrap();
+        let json = serde_json::to_string_pretty(&system_metrics).unwrap();
         println!("{}", json);
     } else {
         // Output as human-readable text
-        println!("Service Information:");
-        println!("  ID: {}", example.id);
-        println!("  Name: {}", example.name);
-        println!("  Active: {}", example.active);
-        println!("  Stats:");
-        println!("    CPU Usage: {:.1}%", example.stats.cpu_usage);
-        println!("    Memory: {} MB", example.stats.memory_mb);
-        println!("    Uptime: {} seconds", example.stats.uptime_seconds);
-        println!("  Tags: {}", example.tags.join(", "));
+        println!("Memory Metrics:");
+        println!("  RAM:");
+        println!("    Total: {:.2} GB", system_metrics.memory.ram_total as f64 / (1024.0 * 1024.0 * 1024.0));
+        println!("    Usage: {:.2} GB", system_metrics.memory.ram_usage as f64 / (1024.0 * 1024.0 * 1024.0));
+        println!("    Used: {:.1}%", (system_metrics.memory.ram_usage as f64 / system_metrics.memory.ram_total as f64) * 100.0);
+        println!("  Swap:");
+        println!("    Total: {:.2} GB", system_metrics.memory.swap_total as f64 / (1024.0 * 1024.0 * 1024.0));
+        println!("    Usage: {:.2} GB", system_metrics.memory.swap_usage as f64 / (1024.0 * 1024.0 * 1024.0));
+        if system_metrics.memory.swap_total > 0 {
+            println!("    Used: {:.1}%", (system_metrics.memory.swap_usage as f64 / system_metrics.memory.swap_total as f64) * 100.0);
+        } else {
+            println!("    Used: 0.0%");
+        }
     }
 }
