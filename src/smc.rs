@@ -9,7 +9,6 @@ const SMC_CMD_READ_INDEX: u8 = 8;
 
 // SMC value types - dynamically determined
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum SMCValue {
     Float(f32),
     U8(u8),
@@ -148,6 +147,51 @@ impl Drop for IOServiceIterator {
             unsafe {
                 IOObjectRelease(self.iterator);
             }
+        }
+    }
+}
+
+// Trait for types that can be read from little-endian bytes
+pub trait FromLeBytes: Sized {
+    fn from_le_bytes(data: &[u8], key: &str) -> Result<Self, Box<dyn std::error::Error>>;
+}
+
+impl FromLeBytes for u16 {
+    fn from_le_bytes(data: &[u8], key: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        if data.len() >= 2 {
+            Ok(u16::from_le_bytes([data[0], data[1]]))
+        } else {
+            Err(format!("Insufficient data for u16 key {}", key).into())
+        }
+    }
+}
+
+impl FromLeBytes for i16 {
+    fn from_le_bytes(data: &[u8], key: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        if data.len() >= 2 {
+            Ok(i16::from_le_bytes([data[0], data[1]]))
+        } else {
+            Err(format!("Insufficient data for i16 key {}", key).into())
+        }
+    }
+}
+
+impl FromLeBytes for u32 {
+    fn from_le_bytes(data: &[u8], key: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        if data.len() >= 4 {
+            Ok(u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+        } else {
+            Err(format!("Insufficient data for u32 key {}", key).into())
+        }
+    }
+}
+
+impl FromLeBytes for i32 {
+    fn from_le_bytes(data: &[u8], key: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        if data.len() >= 4 {
+            Ok(i32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+        } else {
+            Err(format!("Insufficient data for i32 key {}", key).into())
         }
     }
 }
@@ -510,41 +554,6 @@ impl Smc {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn read_u32(&mut self, key: &str) -> Result<u32, Box<dyn std::error::Error>> {
-        match self.read_value(key)? {
-            SMCValue::U32(v) => Ok(v),
-            SMCValue::U16(v) => Ok(v as u32),
-            SMCValue::U8(v) => Ok(v as u32),
-            _ => Err(format!("Key {} cannot be converted to u32", key).into()),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn read_u16(&mut self, key: &str) -> Result<u16, Box<dyn std::error::Error>> {
-        match self.read_value(key)? {
-            SMCValue::U16(v) => Ok(v),
-            SMCValue::U8(v) => Ok(v as u16),
-            _ => Err(format!("Key {} cannot be converted to u16", key).into()),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn read_u8(&mut self, key: &str) -> Result<u8, Box<dyn std::error::Error>> {
-        match self.read_value(key)? {
-            SMCValue::U8(v) => Ok(v),
-            _ => Err(format!("Key {} cannot be converted to u8", key).into()),
-        }
-    }
-
-    pub fn read_i16(&mut self, key: &str) -> Result<i16, Box<dyn std::error::Error>> {
-        match self.read_value(key)? {
-            SMCValue::I16(v) => Ok(v),
-            SMCValue::I8(v) => Ok(v as i16),
-            _ => Err(format!("Key {} cannot be converted to i16", key).into()),
-        }
-    }
-
     pub fn read_temperature(&mut self, key: &str) -> Result<f32, Box<dyn std::error::Error>> {
         // Use dynamic type detection - temperatures can be float or fixed point
         self.read_float(key)
@@ -699,54 +708,34 @@ impl Smc {
         FanMetrics { fans }
     }
 
+    // Generic helper function to read values in little-endian format
+    // (Some SMC keys like battery-related ones use little-endian instead of big-endian)
+    pub fn read_le<T>(&mut self, key: &str) -> Result<T, Box<dyn std::error::Error>>
+    where
+        T: FromLeBytes,
+    {
+        let info = self.read_key_info(key)?;
+        let data = self.read_key_data(key, &info)?;
+
+        T::from_le_bytes(&data, key)
+    }
+
     // Battery metrics with dynamic type handling and proper unit conversion
     pub fn get_battery_metrics(&mut self) -> BatteryMetrics {
-        // Battery capacity - usually in mAh
-        let current_capacity = match self.read_value("B0CC") {
-            Ok(SMCValue::Float(v)) => Some(v),
-            Ok(SMCValue::U16(v)) => Some(v as f32),
-            Ok(SMCValue::U32(v)) => Some(v as f32),
-            Ok(SMCValue::I16(v)) => Some(v as f32),
-            _ => None,
-        };
-
-        let full_charge_capacity = match self.read_value("B0FC") {
-            Ok(SMCValue::Float(v)) => Some(v),
-            Ok(SMCValue::U16(v)) => Some(v as f32),
-            Ok(SMCValue::U32(v)) => Some(v as f32),
-            Ok(SMCValue::I16(v)) => Some(v as f32),
-            _ => None,
-        };
+        // Battery capacity - read as little-endian u16, usually in mAh
+        let current_capacity = self.read_le::<u16>("B0CC").ok().map(|v| v as f32);
+        let full_charge_capacity = self.read_le::<u16>("B0FC").ok().map(|v| v as f32);
 
         let health_percent = match (current_capacity, full_charge_capacity) {
             (Some(cc), Some(fc)) if fc > 0.0 => Some((cc / fc) * 100.0),
             _ => None,
         };
 
-        // Battery voltage - check if it needs mV to V conversion
-        let voltage = match self.read_value("B0AV") {
-            Ok(SMCValue::Float(v)) => {
-                // If value is > 100, it's likely in mV
-                if v > 100.0 { Some(v / 1000.0) } else { Some(v) }
-            }
-            Ok(SMCValue::U16(v)) => Some(v as f32 / 1000.0), // U16 is usually mV
-            Ok(SMCValue::I16(v)) => Some(v as f32 / 1000.0), // I16 is usually mV
-            _ => None,
-        };
+        // Battery voltage - read as little-endian u16, convert from mV to V
+        let voltage = self.read_le::<u16>("B0AV").ok().map(|v| v as f32 / 1000.0);
 
-        // Battery current - check if it needs mA to A conversion
-        let current = match self.read_value("B0AC") {
-            Ok(SMCValue::Float(v)) => {
-                // If absolute value is > 100, it's likely in mA
-                if v.abs() > 100.0 {
-                    Some(v / 1000.0)
-                } else {
-                    Some(v)
-                }
-            }
-            Ok(SMCValue::I16(v)) => Some(v as f32 / 1000.0), // I16 is usually mA
-            _ => None,
-        };
+        // Battery current - read as little-endian i16, convert from mA to A
+        let current = self.read_le::<i16>("B0AC").ok().map(|v| v as f32 / 1000.0);
 
         BatteryMetrics {
             current_capacity,
@@ -758,21 +747,9 @@ impl Smc {
                 .ok()
                 .or_else(|| self.read_temperature("B0TE").ok()),
             cycle_count: {
-                // B0CT (battery cycle count) appears to be stored in little-endian format
+                // B0CT (battery cycle count) is stored in little-endian format
                 // unlike most other SMC values which are big-endian
-                if let Ok(info) = self.read_key_info("B0CT") {
-                    if let Ok(data) = self.read_key_data("B0CT", &info) {
-                        if data.len() >= 2 {
-                            Some(u16::from_le_bytes([data[0], data[1]]) as u32)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+                self.read_le::<u16>("B0CT").ok().map(|v| v as u32)
             },
             health_percent,
         }
@@ -830,10 +807,7 @@ impl Smc {
         CurrentMetrics {
             cpu_currents,
             gpu_currents,
-            battery_current: self
-                .read_float("B0AC")
-                .ok()
-                .or_else(|| self.read_i16("B0AC").ok().map(|v| v as f32 / 1000.0)),
+            battery_current: self.read_le::<i16>("B0AC").ok().map(|v| v as f32 / 1000.0),
         }
     }
 
