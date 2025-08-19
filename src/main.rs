@@ -270,7 +270,7 @@ fn main() {
         ecpu_usage: perf_sample.as_ref().map(|p| p.ecpu_usage),
         pcpu_usage: perf_sample.as_ref().map(|p| p.pcpu_usage),
         gpu_usage: perf_sample.as_ref().map(|p| p.gpu_usage),
-        timestamp: std::time::SystemTime::now()
+        unix_time: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs(),
