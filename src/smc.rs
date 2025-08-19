@@ -338,8 +338,11 @@ impl Smc {
                 &mut output_size,
             );
 
-            if result != 0 || output.result != 0 {
-                return Err(format!("Failed to read key data for {}", key).into());
+            if result != 0 {
+                return Err(format!("Failed to read key data for {} (IOKit error: {})", key, result).into());
+            }
+            if output.result != 0 {
+                return Err(format!("Failed to read key data for {} (SMC error: {})", key, output.result).into());
             }
         }
 
@@ -830,6 +833,87 @@ impl Smc {
             current: self.get_current_metrics(),
         }
     }
+
+    // Debug method to read ALL SMC keys with their raw values
+    pub fn get_all_smc_data(&mut self) -> Result<SmcDebugData, Box<dyn std::error::Error>> {
+        let num_keys = self.read_num_keys()?;
+        let mut keys_data = Vec::new();
+
+        // Read all available keys
+        for i in 0..num_keys {
+            match self.read_key_by_index(i) {
+                Ok(key) => {
+                    // Filter out invalid keys
+                    if !key.chars().all(|c| c.is_ascii_graphic()) || key.len() != 4 {
+                        continue;
+                    }
+
+                    // Try to read key info and data
+                    let mut key_data = SmcKeyData {
+                        key: key.clone(),
+                        type_str: String::new(),
+                        size: 0,
+                        value: None,
+                        raw_bytes: Vec::new(),
+                        error: None,
+                    };
+
+                    match self.read_key_info(&key) {
+                        Ok(info) => {
+                            // Convert type to string
+                            let type_bytes = info.data_type.to_be_bytes();
+                            key_data.type_str = String::from_utf8_lossy(&type_bytes).to_string();
+                            key_data.size = info.data_size;
+
+                            // Try to read the raw data
+                            match self.read_key_data(&key, &info) {
+                                Ok(data) => {
+                                    key_data.raw_bytes = data.clone();
+                                    
+                                    // Try to parse the value
+                                    match self.read_value(&key) {
+                                        Ok(value) => {
+                                            key_data.value = Some(match value {
+                                                SMCValue::Float(f) => SmcDebugValue::Float(f),
+                                                SMCValue::U8(v) => SmcDebugValue::U8(v),
+                                                SMCValue::U16(v) => SmcDebugValue::U16(v),
+                                                SMCValue::U32(v) => SmcDebugValue::U32(v),
+                                                SMCValue::I8(v) => SmcDebugValue::I8(v),
+                                                SMCValue::I16(v) => SmcDebugValue::I16(v),
+                                                SMCValue::Flag(b) => SmcDebugValue::Bool(b),
+                                                SMCValue::String(s) => SmcDebugValue::String(s),
+                                                SMCValue::Bytes(b) => SmcDebugValue::Bytes(b),
+                                            });
+                                        }
+                                        Err(e) => {
+                                            key_data.error = Some(format!("Parse error: {}", e));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    key_data.error = Some(format!("Read error: {}", e));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            key_data.error = Some(format!("Info error: {}", e));
+                        }
+                    }
+
+                    keys_data.push(key_data);
+                }
+                Err(_) => continue,
+            }
+        }
+
+        // Sort keys alphabetically for easier reading
+        keys_data.sort_by(|a, b| a.key.cmp(&b.key));
+
+        Ok(SmcDebugData {
+            total_keys: num_keys,
+            keys: keys_data,
+        })
+    }
 }
 
 impl Drop for Smc {
@@ -907,6 +991,36 @@ pub struct ComprehensiveSMCMetrics {
     pub current: CurrentMetrics,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SmcDebugData {
+    pub total_keys: u32,
+    pub keys: Vec<SmcKeyData>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SmcKeyData {
+    pub key: String,
+    pub type_str: String,
+    pub size: u32,
+    pub value: Option<SmcDebugValue>,
+    pub raw_bytes: Vec<u8>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(untagged)]
+pub enum SmcDebugValue {
+    Float(f32),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    I8(i8),
+    I16(i16),
+    Bool(bool),
+    String(String),
+    Bytes(Vec<u8>),
+}
+
 pub fn get_temperature_metrics() -> Result<TemperatureMetrics, Box<dyn std::error::Error>> {
     let mut smc = match Smc::new() {
         Ok(s) => s,
@@ -936,4 +1050,9 @@ pub fn get_comprehensive_smc_metrics() -> Result<ComprehensiveSMCMetrics, Box<dy
 {
     let mut smc = Smc::new()?;
     Ok(smc.get_comprehensive_metrics())
+}
+
+pub fn get_all_smc_debug_data() -> Result<SmcDebugData, Box<dyn std::error::Error>> {
+    let mut smc = Smc::new()?;
+    smc.get_all_smc_data()
 }

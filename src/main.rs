@@ -6,7 +6,7 @@ mod smc;
 use cpu::CpuMetrics;
 use memory::MemoryMetrics;
 use serde::Serialize;
-use smc::TemperatureMetrics;
+use smc::{TemperatureMetrics, SmcDebugValue};
 use std::env;
 
 #[derive(Serialize)]
@@ -22,9 +22,10 @@ fn print_usage() {
     eprintln!("System memory metrics monitoring tool");
     eprintln!();
     eprintln!("OPTIONS:");
-    eprintln!("    --json    Output as JSON");
-    eprintln!("    --smc     Show comprehensive SMC metrics (power, fans, battery, etc.)");
-    eprintln!("    --help    Print this help message");
+    eprintln!("    --json      Output as JSON");
+    eprintln!("    --smc       Show ALL SMC data for debugging (includes raw values)");
+    eprintln!("    --smc-nice  Show formatted SMC metrics (power, fans, battery, etc.)");
+    eprintln!("    --help      Print this help message");
 }
 
 fn main() {
@@ -32,12 +33,14 @@ fn main() {
 
     // Parse arguments
     let mut json_output = false;
-    let mut comprehensive_smc = false;
+    let mut debug_smc = false;
+    let mut nice_smc = false;
 
     for arg in &args[1..] {
         match arg.as_str() {
             "--json" => json_output = true,
-            "--smc" => comprehensive_smc = true,
+            "--smc" => debug_smc = true,
+            "--smc-nice" => nice_smc = true,
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
@@ -69,8 +72,62 @@ fn main() {
         }
     };
 
-    // If comprehensive SMC flag is set, show all SMC data
-    if comprehensive_smc {
+    // If debug SMC flag is set, show ALL SMC data
+    if debug_smc {
+        match smc::get_all_smc_debug_data() {
+            Ok(debug_data) => {
+                if json_output {
+                    let json = serde_json::to_string_pretty(&debug_data).unwrap();
+                    println!("{}", json);
+                } else {
+                    println!("=== SMC Debug Data ===");
+                    println!("Total Keys: {}", debug_data.total_keys);
+                    println!("Successfully Read: {}\n", debug_data.keys.len());
+                    
+                    for key_data in &debug_data.keys {
+                        println!("Key: {} (type: {}, size: {})", 
+                            key_data.key, key_data.type_str, key_data.size);
+                        
+                        if let Some(ref value) = key_data.value {
+                            print!("  Value: ");
+                            match value {
+                                SmcDebugValue::Float(f) => println!("{:.3}", f),
+                                SmcDebugValue::U8(v) => println!("{}", v),
+                                SmcDebugValue::U16(v) => println!("{}", v),
+                                SmcDebugValue::U32(v) => println!("{}", v),
+                                SmcDebugValue::I8(v) => println!("{}", v),
+                                SmcDebugValue::I16(v) => println!("{}", v),
+                                SmcDebugValue::Bool(b) => println!("{}", b),
+                                SmcDebugValue::String(s) => println!("\"{}\"", s),
+                                SmcDebugValue::Bytes(_) => println!("<binary data>"),
+                            }
+                        }
+                        
+                        if !key_data.raw_bytes.is_empty() {
+                            print!("  Raw: ");
+                            for byte in &key_data.raw_bytes {
+                                print!("{:02x} ", byte);
+                            }
+                            println!();
+                        }
+                        
+                        if let Some(ref error) = key_data.error {
+                            println!("  Error: {}", error);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error getting SMC debug data: {}", e);
+                eprintln!("This may require elevated privileges or SMC access permissions.");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // If nice SMC flag is set, show formatted SMC data
+    if nice_smc {
         match smc::get_comprehensive_smc_metrics() {
             Ok(metrics) => {
                 if json_output {
