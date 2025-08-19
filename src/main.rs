@@ -1,10 +1,12 @@
 mod cpu;
 mod iokit;
+mod ioreport_perf;
 mod memory;
 mod smc;
 
 use cpu::CpuMetrics;
 use iokit::PowerMetrics;
+use ioreport_perf::IOReportPerf;
 use memory::MemoryMetrics;
 use serde::Serialize;
 use smc::{SmcDebugValue, TemperatureMetrics};
@@ -16,6 +18,10 @@ struct SystemMetrics {
     cpu: CpuMetrics,
     temperature: Option<TemperatureMetrics>,
     power: Option<PowerMetrics>,
+    ecpu_usage: Option<(u32, f32)>,
+    pcpu_usage: Option<(u32, f32)>,
+    gpu_usage: Option<(u32, f32)>,
+    unix_time: u64,
 }
 
 fn print_usage() {
@@ -248,11 +254,26 @@ fn main() {
 
     let power_metrics = iokit::get_power_metrics(smc_sys_power).ok();
 
+    // Get performance metrics (CPU/GPU frequency and utilization)
+    let perf_sample = if let Ok(perf_monitor) = IOReportPerf::new() {
+        // Sample for 250ms to get accurate readings
+        Some(perf_monitor.get_sample(250))
+    } else {
+        None
+    };
+
     let system_metrics = SystemMetrics {
         memory: memory_metrics,
         cpu: cpu_metrics,
         temperature: temperature_metrics,
         power: power_metrics,
+        ecpu_usage: perf_sample.as_ref().map(|p| p.ecpu_usage),
+        pcpu_usage: perf_sample.as_ref().map(|p| p.pcpu_usage),
+        gpu_usage: perf_sample.as_ref().map(|p| p.gpu_usage),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
     };
 
     if json_output {
@@ -275,6 +296,17 @@ fn main() {
             println!("  Performance Cores: {}", pcpu);
         }
         println!("  Frequency: {} MHz", system_metrics.cpu.cpu_frequency_mhz);
+        
+        // Performance metrics
+        if let Some((freq, util)) = system_metrics.ecpu_usage {
+            println!("  E-Core Usage: {} MHz ({:.1}%)", freq, util);
+        }
+        if let Some((freq, util)) = system_metrics.pcpu_usage {
+            println!("  P-Core Usage: {} MHz ({:.1}%)", freq, util);
+        }
+        if let Some((freq, util)) = system_metrics.gpu_usage {
+            println!("  GPU Usage: {} MHz ({:.1}%)", freq, util);
+        }
 
         if let Some(ref temps) = system_metrics.temperature {
             println!("\nTemperature Metrics:");

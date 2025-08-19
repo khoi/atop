@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::mem;
 use std::process::Command;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct CpuMetrics {
     pub physical_cores: u32,
     pub logical_cores: u32,
@@ -14,6 +14,25 @@ pub struct CpuMetrics {
     pub pcpu_cores: Option<u32>,
     pub ecpu_freqs_mhz: Option<Vec<u32>>,
     pub pcpu_freqs_mhz: Option<Vec<u32>>,
+}
+
+#[derive(Debug, Default)]
+pub struct CpuInfo {
+    pub ecpu_freqs_mhz: Vec<u32>,
+    pub pcpu_freqs_mhz: Vec<u32>,
+}
+
+pub fn get_cpu_info() -> Result<CpuInfo, Box<dyn std::error::Error>> {
+    let (ecpu_freqs_mhz, pcpu_freqs_mhz, _) = iokit::get_cpu_frequencies()?;
+    Ok(CpuInfo {
+        ecpu_freqs_mhz: ecpu_freqs_mhz.unwrap_or_default(),
+        pcpu_freqs_mhz: pcpu_freqs_mhz.unwrap_or_default(),
+    })
+}
+
+pub fn get_gpu_freqs() -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+    let (_, gpu_freqs, _) = iokit::get_gpu_frequencies()?;
+    Ok(gpu_freqs.unwrap_or_default())
 }
 
 pub fn get_cpu_metrics() -> Result<CpuMetrics, Box<dyn std::error::Error>> {
