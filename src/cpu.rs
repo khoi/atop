@@ -42,12 +42,18 @@ pub fn get_cpu_metrics() -> Result<CpuMetrics, Box<dyn std::error::Error>> {
     let cpu_brand = get_cpu_brand();
 
     // Get CPU frequencies directly from IORegistry using IOKit (no system_profiler by default)
-    let (ecpu_freqs_mhz, pcpu_freqs_mhz, chip_name_from_io) = iokit::get_cpu_frequencies()?;
+    let (ecpu_freqs_mhz, pcpu_freqs_mhz, _chip_name_unused) = iokit::get_cpu_frequencies()?;
 
-    // Prefer IOKit-provided chip name; avoid system_profiler by default
-    let mut chip_name = chip_name_from_io;
-    let mut ecpu_cores: Option<u32> = None;
-    let mut pcpu_cores: Option<u32> = None;
+    // Use brand as chip name when informative
+    let mut chip_name = if cpu_brand != "Apple Processor" {
+        Some(cpu_brand.clone())
+    } else {
+        None
+    };
+    // Try to read E/P core counts via sysctl fast path
+    let (ecpu_fast, pcpu_fast) = get_perflevel_core_counts();
+    let mut ecpu_cores: Option<u32> = ecpu_fast;
+    let mut pcpu_cores: Option<u32> = pcpu_fast;
 
     // Derive CPU frequency from IORegistry max P-core freq or sysctl fallback
     let mut cpu_frequency_mhz = pcpu_freqs_mhz
@@ -291,4 +297,31 @@ fn get_apple_silicon_info() -> (Option<String>, Option<u32>, Option<u32>, Option
     }
 
     (None, None, None, None)
+}
+
+fn get_perflevel_core_counts() -> (Option<u32>, Option<u32>) {
+    unsafe {
+        let read_u32 = |name: &str| -> Option<u32> {
+            if let Ok(cname) = CString::new(name) {
+                let mut val: u32 = 0;
+                let mut size = std::mem::size_of::<u32>();
+                let ret = libc::sysctlbyname(
+                    cname.as_ptr(),
+                    &mut val as *mut _ as *mut libc::c_void,
+                    &mut size,
+                    std::ptr::null_mut(),
+                    0,
+                );
+                if ret == 0 && size as usize == std::mem::size_of::<u32>() && val > 0 {
+                    return Some(val);
+                }
+            }
+            None
+        };
+
+        // perflevel0 = performance cores, perflevel1 = efficiency cores (on newer macOS)
+        let pcpu = read_u32("hw.perflevel0.physicalcpu");
+        let ecpu = read_u32("hw.perflevel1.physicalcpu");
+        (ecpu, pcpu)
+    }
 }
