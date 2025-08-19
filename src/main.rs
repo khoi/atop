@@ -1,10 +1,10 @@
-mod memory;
 mod cpu;
+mod iokit;
+mod memory;
 
-use memory::MemoryMetrics;
 use cpu::CpuMetrics;
+use memory::MemoryMetrics;
 use serde::Serialize;
-use serde_json;
 use std::env;
 
 #[derive(Serialize)]
@@ -25,10 +25,10 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     // Parse arguments
     let mut json_output = false;
-    
+
     for arg in &args[1..] {
         match arg.as_str() {
             "--json" => json_output = true,
@@ -88,17 +88,37 @@ fn main() {
             println!("  Performance Cores: {}", pcpu);
         }
         println!("  Frequency: {} MHz", system_metrics.cpu.cpu_frequency_mhz);
-        
+
         println!("\nMemory Metrics:");
         println!("  RAM:");
-        println!("    Total: {:.2} GB", system_metrics.memory.ram_total as f64 / (1024.0 * 1024.0 * 1024.0));
-        println!("    Usage: {:.2} GB", system_metrics.memory.ram_usage as f64 / (1024.0 * 1024.0 * 1024.0));
-        println!("    Used: {:.1}%", (system_metrics.memory.ram_usage as f64 / system_metrics.memory.ram_total as f64) * 100.0);
+        println!(
+            "    Total: {:.2} GB",
+            system_metrics.memory.ram_total as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+        println!(
+            "    Usage: {:.2} GB",
+            system_metrics.memory.ram_usage as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+        println!(
+            "    Used: {:.1}%",
+            (system_metrics.memory.ram_usage as f64 / system_metrics.memory.ram_total as f64)
+                * 100.0
+        );
         println!("  Swap:");
-        println!("    Total: {:.2} GB", system_metrics.memory.swap_total as f64 / (1024.0 * 1024.0 * 1024.0));
-        println!("    Usage: {:.2} GB", system_metrics.memory.swap_usage as f64 / (1024.0 * 1024.0 * 1024.0));
+        println!(
+            "    Total: {:.2} GB",
+            system_metrics.memory.swap_total as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+        println!(
+            "    Usage: {:.2} GB",
+            system_metrics.memory.swap_usage as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
         if system_metrics.memory.swap_total > 0 {
-            println!("    Used: {:.1}%", (system_metrics.memory.swap_usage as f64 / system_metrics.memory.swap_total as f64) * 100.0);
+            println!(
+                "    Used: {:.1}%",
+                (system_metrics.memory.swap_usage as f64 / system_metrics.memory.swap_total as f64)
+                    * 100.0
+            );
         } else {
             println!("    Used: 0.0%");
         }

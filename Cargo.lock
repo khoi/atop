@@ -6,7 +6,8 @@ version = 4
 name = "atop"
 version = "0.1.0"
 dependencies = [
- "hex",
+ "core-foundation",
+ "core-foundation-sys",
  "libc",
  "mach2",
  "serde",
@@ -14,10 +15,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "hex"
-version = "0.4.3"
+name = "core-foundation"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
+
+[[package]]
+name = "core-foundation-sys"
+version = "0.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "itoa"
