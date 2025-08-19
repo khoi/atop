@@ -184,10 +184,10 @@ fn get_cpu_brand() -> String {
                     if let Some(pos) = buf.iter().position(|&b| b == 0) {
                         buf.truncate(pos);
                     }
-                    if let Ok(s) = std::str::from_utf8(&buf) {
-                        if !s.is_empty() {
-                            return s.to_string();
-                        }
+                    if let Ok(s) = std::str::from_utf8(&buf)
+                        && !s.is_empty()
+                    {
+                        return s.to_string();
                     }
                 }
             }
@@ -312,7 +312,7 @@ fn get_perflevel_core_counts() -> (Option<u32>, Option<u32>) {
                     std::ptr::null_mut(),
                     0,
                 );
-                if ret == 0 && size as usize == std::mem::size_of::<u32>() && val > 0 {
+                if ret == 0 && size == std::mem::size_of::<u32>() && val > 0 {
                     return Some(val);
                 }
             }

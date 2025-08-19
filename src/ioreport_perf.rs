@@ -2,12 +2,11 @@ use crate::utils::{cf_dict_get_array, cf_string, cf_string_to_rust};
 use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex};
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType, kCFAllocatorDefault};
 use core_foundation::dictionary::{
-    CFDictionaryCreateMutableCopy, CFDictionaryGetCount, CFDictionaryGetValue, CFDictionaryRef,
-    CFMutableDictionaryRef,
+    CFDictionaryCreateMutableCopy, CFDictionaryGetCount, CFDictionaryRef, CFMutableDictionaryRef,
 };
 #[allow(unused_imports)]
 use core_foundation::number::{CFNumberCreate, CFNumberRef, kCFNumberSInt32Type};
-use core_foundation::string::{CFString, CFStringGetCString, CFStringRef, kCFStringEncodingUTF8};
+use core_foundation::string::CFStringRef;
 use std::ffi::c_void;
 use std::ptr::null;
 
@@ -58,47 +57,6 @@ unsafe extern "C" {
     fn IOReportStateGetResidency(a: CFDictionaryRef, b: i32) -> i64;
 }
 
-// ==============================================================================
-// Helper Functions
-// ==============================================================================
-
-#[allow(dead_code)]
-fn cfnum(val: i32) -> CFNumberRef {
-    unsafe {
-        CFNumberCreate(
-            kCFAllocatorDefault,
-            kCFNumberSInt32Type,
-            &val as *const i32 as _,
-        )
-    }
-}
-
-// NOTE: cfstr kept earlier; now using utils::cf_string instead
-
-fn from_cfstr(val: CFStringRef) -> String {
-    unsafe {
-        let mut buf = Vec::with_capacity(128);
-        if CFStringGetCString(val, buf.as_mut_ptr(), 128, kCFStringEncodingUTF8) == 0 {
-            return String::new();
-        }
-        std::ffi::CStr::from_ptr(buf.as_ptr())
-            .to_string_lossy()
-            .to_string()
-    }
-}
-
-fn cfdict_get_val(dict: CFDictionaryRef, key: &str) -> Option<CFTypeRef> {
-    unsafe {
-        let key = CFString::new(key);
-        let val = CFDictionaryGetValue(dict, key.as_CFTypeRef());
-        if val.is_null() { None } else { Some(val) }
-    }
-}
-
-// ==============================================================================
-// Performance State Residency Analysis
-// ==============================================================================
-
 fn get_residencies(item: CFDictionaryRef) -> Vec<(String, i64)> {
     let count = unsafe { IOReportStateGetCount(item) };
     let mut res = vec![];
@@ -106,7 +64,7 @@ fn get_residencies(item: CFDictionaryRef) -> Vec<(String, i64)> {
     for i in 0..count {
         let name = unsafe { IOReportStateGetNameForIndex(item, i) };
         let val = unsafe { IOReportStateGetResidency(item, i) };
-        res.push((from_cfstr(name), val));
+        res.push((cf_string_to_rust(name), val));
     }
 
     res
@@ -146,13 +104,9 @@ fn calc_freq(item: CFDictionaryRef, freqs: &[u32]) -> (u32, f32) {
     (avg_freq as u32, from_max as f32)
 }
 
-// ==============================================================================
-// IOReport Performance Monitor
-// ==============================================================================
-
 pub struct IOReportPerf {
-    subs: IOReportSubscriptionRef,
-    chan: CFMutableDictionaryRef,
+    subscription: IOReportSubscriptionRef,
+    channel_dictionary: CFMutableDictionaryRef,
 }
 
 impl IOReportPerf {
@@ -163,19 +117,22 @@ impl IOReportPerf {
             ("GPU Stats", Some("GPU Performance States")),
         ];
 
-        let chan = create_channels(channels)?;
-        let subs = create_subscription(chan)?;
+        let channel_dictionary = create_channels(channels)?;
+        let subscription = create_subscription(channel_dictionary)?;
 
-        Ok(Self { subs, chan })
+        Ok(Self {
+            subscription,
+            channel_dictionary,
+        })
     }
 
     /// Get a single sample of performance metrics
     pub fn get_sample(&self, duration_ms: u64) -> PerformanceSample {
         unsafe {
             // Take two samples with specified duration between them
-            let sample1 = IOReportCreateSamples(self.subs, self.chan, null());
+            let sample1 = IOReportCreateSamples(self.subscription, self.channel_dictionary, null());
             std::thread::sleep(std::time::Duration::from_millis(duration_ms));
-            let sample2 = IOReportCreateSamples(self.subs, self.chan, null());
+            let sample2 = IOReportCreateSamples(self.subscription, self.channel_dictionary, null());
 
             // Calculate delta between samples
             let delta = IOReportCreateSamplesDelta(sample1, sample2, null());
@@ -192,15 +149,11 @@ impl IOReportPerf {
 impl Drop for IOReportPerf {
     fn drop(&mut self) {
         unsafe {
-            CFRelease(self.chan as _);
-            CFRelease(self.subs as _);
+            CFRelease(self.channel_dictionary as _);
+            CFRelease(self.subscription as _);
         }
     }
 }
-
-// ==============================================================================
-// Channel Creation and Subscription
-// ==============================================================================
 
 fn create_channels(
     items: Vec<(&str, Option<&str>)>,
@@ -236,7 +189,7 @@ fn create_channels(
         unsafe { CFRelease(channel as _) };
     }
 
-    if cfdict_get_val(chan, "IOReportChannels").is_none() {
+    if cf_dict_get_array(chan, "IOReportChannels").is_err() {
         return Err("Failed to get channels".into());
     }
 
@@ -244,10 +197,12 @@ fn create_channels(
 }
 
 fn create_subscription(
-    chan: CFMutableDictionaryRef,
+    channel_dictionary: CFMutableDictionaryRef,
 ) -> Result<IOReportSubscriptionRef, Box<dyn std::error::Error>> {
     let mut dict: std::mem::MaybeUninit<CFMutableDictionaryRef> = std::mem::MaybeUninit::uninit();
-    let subs = unsafe { IOReportCreateSubscription(null(), chan, dict.as_mut_ptr(), 0, null()) };
+    let subs = unsafe {
+        IOReportCreateSubscription(null(), channel_dictionary, dict.as_mut_ptr(), 0, null())
+    };
 
     if subs.is_null() {
         return Err("Failed to create subscription".into());
@@ -256,10 +211,6 @@ fn create_subscription(
     unsafe { dict.assume_init() };
     Ok(subs)
 }
-
-// ==============================================================================
-// Sample Parsing
-// ==============================================================================
 
 #[derive(Debug, Default)]
 pub struct PerformanceSample {
