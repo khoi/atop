@@ -167,15 +167,14 @@ pub fn get_cpu_frequencies() -> CpuFrequencyResult {
             // Check a sample frequency to determine if values are in Hz or KHz
             if let Some(sample_freqs) = parse_dvfs_mhz(props, "voltage-states1-sram")
                 .or_else(|| parse_dvfs_mhz(props, "voltage-states5-sram"))
+                && let Some(&first_freq) = sample_freqs.first()
             {
-                if let Some(&first_freq) = sample_freqs.first() {
-                    // If raw value is > 100 MHz (100_000_000 Hz), it's in Hz
-                    // If raw value is < 10 MHz (10_000 KHz), it's in KHz
-                    if first_freq > 100_000_000 {
-                        cpu_scale = 1000 * 1000; // Hz to MHz
-                    } else if first_freq < 10_000 {
-                        cpu_scale = 1000; // KHz to MHz
-                    }
+                // If raw value is > 100 MHz (100_000_000 Hz), it's in Hz
+                // If raw value is < 10 MHz (10_000 KHz), it's in KHz
+                if first_freq > 100_000_000 {
+                    cpu_scale = 1000 * 1000; // Hz to MHz
+                } else if first_freq < 10_000 {
+                    cpu_scale = 1000; // KHz to MHz
                 }
             }
 

@@ -1,9 +1,26 @@
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::mem;
 
 // SMC key types
 const SMC_CMD_READ_KEYINFO: u8 = 9;
 const SMC_CMD_READ_BYTES: u8 = 5;
+const SMC_CMD_READ_INDEX: u8 = 8;
+
+// SMC value types - dynamically determined
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub enum SMCValue {
+    Float(f32),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    I8(i8),
+    I16(i16),
+    Flag(bool),
+    String(String),
+    Bytes(Vec<u8>),
+}
 
 // SMC data structures
 #[repr(C)]
@@ -135,11 +152,12 @@ impl Drop for IOServiceIterator {
     }
 }
 
-pub struct SMC {
+pub struct Smc {
     connection: u32,
+    key_cache: HashMap<u32, SMCKeyInfoData>,
 }
 
-impl SMC {
+impl Smc {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let mut connection = 0u32;
 
@@ -153,7 +171,17 @@ impl SMC {
                     IOObjectRelease(device);
 
                     if result == 0 && connection != 0 {
-                        return Ok(SMC { connection });
+                        return Ok(Smc {
+                            connection,
+                            key_cache: HashMap::new(),
+                        });
+                    } else if result == -536870174 {
+                        // kIOReturnNotPrivileged
+                        return Err("SMC access denied. Temperature monitoring may require elevated privileges on some systems.".into());
+                    } else if result != 0 {
+                        return Err(
+                            format!("Failed to open SMC service: error code {}", result).into()
+                        );
                     }
                 }
             } else {
@@ -167,13 +195,47 @@ impl SMC {
         Err("Failed to find and connect to SMC endpoint".into())
     }
 
-    fn read_key_info(&self, key: &str) -> Result<SMCKeyInfoData, Box<dyn std::error::Error>> {
+    fn read_key_by_index(&self, index: u32) -> Result<String, Box<dyn std::error::Error>> {
+        let input = SMCKeyData {
+            data8: SMC_CMD_READ_INDEX,
+            data32: index,
+            ..Default::default()
+        };
+
+        let mut output = input;
+        let mut output_size = mem::size_of::<SMCKeyData>();
+
+        unsafe {
+            let result = IOConnectCallStructMethod(
+                self.connection,
+                2,
+                &input as *const _ as *const std::ffi::c_void,
+                mem::size_of::<SMCKeyData>(),
+                &mut output as *mut _ as *mut std::ffi::c_void,
+                &mut output_size,
+            );
+
+            if result != 0 {
+                return Err(format!("Failed to read key at index {}", index).into());
+            }
+        }
+
+        let key_bytes = output.key.to_be_bytes();
+        Ok(std::str::from_utf8(&key_bytes)?.to_string())
+    }
+
+    fn read_key_info(&mut self, key: &str) -> Result<SMCKeyInfoData, Box<dyn std::error::Error>> {
         if key.len() != 4 {
             return Err("SMC key must be exactly 4 characters".into());
         }
 
         let key_bytes = key.as_bytes();
         let key_32 = u32::from_be_bytes([key_bytes[0], key_bytes[1], key_bytes[2], key_bytes[3]]);
+
+        // Check cache first
+        if let Some(&cached_info) = self.key_cache.get(&key_32) {
+            return Ok(cached_info);
+        }
 
         let input = SMCKeyData {
             key: key_32,
@@ -207,7 +269,41 @@ impl SMC {
             }
         }
 
+        // Cache the result
+        self.key_cache.insert(key_32, output.key_info);
         Ok(output.key_info)
+    }
+
+    pub fn read_all_keys(&mut self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        // Read the number of keys from #KEY
+        let num_keys = self.read_num_keys()?;
+        let mut keys = Vec::new();
+
+        for i in 0..num_keys {
+            match self.read_key_by_index(i) {
+                Ok(key) => {
+                    // Filter out invalid keys
+                    if !key.chars().all(|c| c.is_ascii_graphic()) {
+                        continue;
+                    }
+                    keys.push(key);
+                }
+                Err(_) => continue,
+            }
+        }
+
+        Ok(keys)
+    }
+
+    fn read_num_keys(&mut self) -> Result<u32, Box<dyn std::error::Error>> {
+        let info = self.read_key_info("#KEY")?;
+        let data = self.read_key_data("#KEY", &info)?;
+
+        if data.len() >= 4 {
+            Ok(u32::from_be_bytes([data[0], data[1], data[2], data[3]]))
+        } else {
+            Err("Invalid #KEY data".into())
+        }
     }
 
     fn read_key_data(
@@ -250,62 +346,249 @@ impl SMC {
         Ok(output.bytes[0..info.data_size as usize].to_vec())
     }
 
-    pub fn read_temperature(&self, key: &str) -> Result<f32, Box<dyn std::error::Error>> {
+    // Generic value reading with dynamic type detection
+    pub fn read_value(&mut self, key: &str) -> Result<SMCValue, Box<dyn std::error::Error>> {
         let info = self.read_key_info(key)?;
         let data = self.read_key_data(key, &info)?;
 
-        // Temperature keys on Apple Silicon use "flt " format
-        // The type is stored in key_info.data_type
-        match info.data_type {
-            0x666c7420 => {
-                // "flt " - 32-bit float (most common on Apple Silicon)
+        // Convert type to string for easier handling
+        let type_bytes = info.data_type.to_be_bytes();
+        let type_str = std::str::from_utf8(&type_bytes).unwrap_or("????");
+
+        // Dynamically parse based on type string
+        let value = match type_str {
+            "flt " => {
+                // 32-bit float (little-endian on Apple Silicon)
                 if data.len() >= 4 {
-                    let bytes = [data[0], data[1], data[2], data[3]];
-                    Ok(f32::from_le_bytes(bytes)) // Little-endian!
+                    SMCValue::Float(f32::from_le_bytes([data[0], data[1], data[2], data[3]]))
                 } else {
-                    Err("Invalid temperature data".into())
+                    return Err("Invalid float data".into());
                 }
             }
-            0x73703738 => {
-                // "sp78" - 16.16 fixed point (older format)
+            "fp1f" | "fp2e" | "fp3d" | "fp4c" | "fp5b" | "fp6a" | "fp79" | "fp88" | "fpa6"
+            | "fpc4" | "fpe2" => {
+                // Fixed point formats - interpret as scaled integers
                 if data.len() >= 2 {
                     let raw = u16::from_be_bytes([data[0], data[1]]);
-                    Ok(raw as f32 / 256.0)
+                    let scale = match type_str {
+                        "fp1f" => 32768.0, // 2^15
+                        "fp2e" => 16384.0, // 2^14
+                        "fp3d" => 8192.0,  // 2^13
+                        "fp4c" => 4096.0,  // 2^12
+                        "fp5b" => 2048.0,  // 2^11
+                        "fp6a" => 1024.0,  // 2^10
+                        "fp79" => 512.0,   // 2^9
+                        "fp88" => 256.0,   // 2^8
+                        "fpa6" => 64.0,    // 2^6
+                        "fpc4" => 16.0,    // 2^4
+                        "fpe2" => 4.0,     // 2^2
+                        _ => 256.0,
+                    };
+                    SMCValue::Float(raw as f32 / scale)
                 } else {
-                    Err("Invalid temperature data".into())
+                    return Err("Invalid fixed point data".into());
+                }
+            }
+            "sp1e" | "sp2d" | "sp3c" | "sp4b" | "sp5a" | "sp69" | "sp78" | "sp87" | "sp96"
+            | "spb4" | "spf0" => {
+                // Signed fixed point formats
+                if data.len() >= 2 {
+                    let raw = i16::from_be_bytes([data[0], data[1]]);
+                    let scale = match type_str {
+                        "sp1e" => 16384.0,
+                        "sp2d" => 8192.0,
+                        "sp3c" => 4096.0,
+                        "sp4b" => 2048.0,
+                        "sp5a" => 1024.0,
+                        "sp69" => 512.0,
+                        "sp78" => 256.0,
+                        "sp87" => 128.0,
+                        "sp96" => 64.0,
+                        "spb4" => 16.0,
+                        "spf0" => 1.0,
+                        _ => 256.0,
+                    };
+                    SMCValue::Float(raw as f32 / scale)
+                } else {
+                    return Err("Invalid signed fixed point data".into());
+                }
+            }
+            "ui8 " => {
+                // Unsigned 8-bit integer
+                if !data.is_empty() {
+                    SMCValue::U8(data[0])
+                } else {
+                    return Err("Invalid ui8 data".into());
+                }
+            }
+            "ui16" => {
+                // Unsigned 16-bit integer
+                if data.len() >= 2 {
+                    SMCValue::U16(u16::from_be_bytes([data[0], data[1]]))
+                } else {
+                    return Err("Invalid ui16 data".into());
+                }
+            }
+            "ui32" => {
+                // Unsigned 32-bit integer
+                if data.len() >= 4 {
+                    SMCValue::U32(u32::from_be_bytes([data[0], data[1], data[2], data[3]]))
+                } else {
+                    return Err("Invalid ui32 data".into());
+                }
+            }
+            "si8 " => {
+                // Signed 8-bit integer
+                if !data.is_empty() {
+                    SMCValue::I8(data[0] as i8)
+                } else {
+                    return Err("Invalid si8 data".into());
+                }
+            }
+            "si16" => {
+                // Signed 16-bit integer
+                if data.len() >= 2 {
+                    SMCValue::I16(i16::from_be_bytes([data[0], data[1]]))
+                } else {
+                    return Err("Invalid si16 data".into());
+                }
+            }
+            "flag" => {
+                // Boolean flag
+                if !data.is_empty() {
+                    SMCValue::Flag(data[0] != 0)
+                } else {
+                    return Err("Invalid flag data".into());
+                }
+            }
+            "ch8*" => {
+                // 8-character string
+                let end = data
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(8.min(data.len()));
+                SMCValue::String(String::from_utf8_lossy(&data[..end]).to_string())
+            }
+            "{fds" => {
+                // Fan descriptor struct
+                if data.len() >= 16 {
+                    // Parse fan descriptor (format may vary)
+                    SMCValue::Bytes(data.clone())
+                } else {
+                    return Err("Invalid fan descriptor".into());
                 }
             }
             _ => {
-                // Unknown format - for debugging
-                Err(format!(
-                    "Unknown data type: 0x{:08x} for key {}",
-                    info.data_type, key
-                )
-                .into())
+                // Unknown type - return raw bytes
+                SMCValue::Bytes(data.clone())
             }
+        };
+
+        Ok(value)
+    }
+
+    pub fn read_float(&mut self, key: &str) -> Result<f32, Box<dyn std::error::Error>> {
+        match self.read_value(key)? {
+            SMCValue::Float(f) => Ok(f),
+            SMCValue::U8(v) => Ok(v as f32),
+            SMCValue::U16(v) => Ok(v as f32),
+            SMCValue::U32(v) => Ok(v as f32),
+            SMCValue::I8(v) => Ok(v as f32),
+            SMCValue::I16(v) => Ok(v as f32),
+            _ => Err(format!("Key {} cannot be converted to float", key).into()),
         }
     }
 
-    pub fn get_cpu_temperature(&self) -> Result<f32, Box<dyn std::error::Error>> {
-        // Collect all CPU temperature sensors (Tp* for P-cores, Te* for E-cores)
+    #[allow(dead_code)]
+    pub fn read_u32(&mut self, key: &str) -> Result<u32, Box<dyn std::error::Error>> {
+        match self.read_value(key)? {
+            SMCValue::U32(v) => Ok(v),
+            SMCValue::U16(v) => Ok(v as u32),
+            SMCValue::U8(v) => Ok(v as u32),
+            _ => Err(format!("Key {} cannot be converted to u32", key).into()),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn read_u16(&mut self, key: &str) -> Result<u16, Box<dyn std::error::Error>> {
+        match self.read_value(key)? {
+            SMCValue::U16(v) => Ok(v),
+            SMCValue::U8(v) => Ok(v as u16),
+            _ => Err(format!("Key {} cannot be converted to u16", key).into()),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn read_u8(&mut self, key: &str) -> Result<u8, Box<dyn std::error::Error>> {
+        match self.read_value(key)? {
+            SMCValue::U8(v) => Ok(v),
+            _ => Err(format!("Key {} cannot be converted to u8", key).into()),
+        }
+    }
+
+    pub fn read_i16(&mut self, key: &str) -> Result<i16, Box<dyn std::error::Error>> {
+        match self.read_value(key)? {
+            SMCValue::I16(v) => Ok(v),
+            SMCValue::I8(v) => Ok(v as i16),
+            _ => Err(format!("Key {} cannot be converted to i16", key).into()),
+        }
+    }
+
+    pub fn read_temperature(&mut self, key: &str) -> Result<f32, Box<dyn std::error::Error>> {
+        // Use dynamic type detection - temperatures can be float or fixed point
+        self.read_float(key)
+    }
+
+    pub fn discover_temperature_sensors(
+        &mut self,
+    ) -> Result<(Vec<String>, Vec<String>), Box<dyn std::error::Error>> {
+        let mut cpu_sensors = Vec::new();
+        let mut gpu_sensors = Vec::new();
+
+        // Try to read all keys
+        let all_keys = self.read_all_keys().unwrap_or_else(|_| {
+            // Fall back to known keys if discovery fails
+            vec![
+                "Te04", "Te05", "Te06", "Te0K", "Te0L", "Te0M", "Te0P", "Te0Q", "Te0S", "Te0T",
+                "Tp04", "Tp05", "Tp06", "Tp0C", "Tp0D", "Tp0E", "Tp0K", "Tp0L", "Tp0M", "Tp0R",
+                "Tg03", "Tg04", "Tg05", "Tg08", "Tg0L", "Tg0M",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+        });
+
+        for key in &all_keys {
+            // Temperature sensors typically start with T and have numeric values
+            if key.starts_with("T") {
+                // Try to read as temperature (will handle any numeric type)
+                if let Ok(temp) = self.read_temperature(key) {
+                    // Sanity check for temperature range
+                    if temp > -50.0 && temp < 150.0 {
+                        // Categorize by prefix
+                        if key.starts_with("Tp") || key.starts_with("Te") {
+                            cpu_sensors.push(key.clone());
+                        } else if key.starts_with("Tg") {
+                            gpu_sensors.push(key.clone());
+                        }
+                        // Could add more categories: Tm (memory), Tb (battery), etc.
+                    }
+                }
+            }
+        }
+
+        Ok((cpu_sensors, gpu_sensors))
+    }
+
+    pub fn get_cpu_temperature(&mut self) -> Result<f32, Box<dyn std::error::Error>> {
+        // Use discovered sensors or fall back to known ones
+        let (cpu_sensors, _) = self.discover_temperature_sensors()?;
         let mut temps = Vec::new();
 
-        // Try known CPU temperature keys (found on M3 Max)
-        let known_keys = [
-            // E-core temperatures
-            "Te04", "Te05", "Te06", "Te0K", "Te0L", "Te0M", "Te0P", "Te0Q", "Te0S", "Te0T",
-            // P-core temperatures
-            "Tp04", "Tp05", "Tp06", "Tp0C", "Tp0D", "Tp0E", "Tp0K", "Tp0L", "Tp0M", "Tp0R", "Tp0S",
-            "Tp0T", "Tp0U", "Tp0V", "Tp0W", "Tp0a", "Tp0b", "Tp0c", "Tp16", "Tp17", "Tp18", "Tp1E",
-            "Tp1F", "Tp1G", "Tp1I", "Tp1J", "Tp1K", "Tp25", "Tp26", "Tp27", "Tp29", "Tp2A", "Tp2B",
-            "Tp2H", "Tp2I", "Tp2J", "Tp33", "Tp34", "Tp35", "Tp3B", "Tp3C", "Tp3D",
-        ];
-
-        for key in &known_keys {
-            if let Ok(temp) = self.read_temperature(key) {
-                if temp > 0.0 && temp < 150.0 {
-                    temps.push(temp);
-                }
+        for key in &cpu_sensors {
+            match self.read_temperature(key) {
+                Ok(temp) if temp > 0.0 && temp < 150.0 => temps.push(temp),
+                _ => continue,
             }
         }
 
@@ -317,23 +600,15 @@ impl SMC {
         }
     }
 
-    pub fn get_gpu_temperature(&self) -> Result<f32, Box<dyn std::error::Error>> {
-        // Collect all GPU temperature sensors
+    pub fn get_gpu_temperature(&mut self) -> Result<f32, Box<dyn std::error::Error>> {
+        // Use discovered sensors or fall back to known ones
+        let (_, gpu_sensors) = self.discover_temperature_sensors()?;
         let mut temps = Vec::new();
 
-        // Try known GPU temperature keys (found on M3 Max)
-        let known_keys = [
-            "Tg00", "Tg01", "Tg04", "Tg05", "Tg0C", "Tg0D", "Tg0K", "Tg0L", "Tg0y", "Tg0z", "Tg16",
-            "Tg17", "Tg1E", "Tg1F", "Tg1s", "Tg1t", "Tg21", "Tg22", "Tg29", "Tg2A", "Tg2H", "Tg2I",
-            "Tg33", "Tg34", "Tg3B", "Tg3C", "Tg3J", "Tg3K", "Tg3x", "Tg3y",
-        ];
-
-        for key in &known_keys {
-            if let Ok(temp) = self.read_temperature(key) {
-                if temp > 0.0 && temp < 150.0 {
-                    // Sanity check
-                    temps.push(temp);
-                }
+        for key in &gpu_sensors {
+            match self.read_temperature(key) {
+                Ok(temp) if temp > 0.0 && temp < 150.0 => temps.push(temp),
+                _ => continue,
             }
         }
 
@@ -345,7 +620,7 @@ impl SMC {
         }
     }
 
-    pub fn get_all_temperatures(&self) -> Vec<(String, f32)> {
+    pub fn get_all_temperatures(&mut self) -> Vec<(String, f32)> {
         let mut temps = Vec::new();
 
         // Common temperature sensor keys
@@ -367,18 +642,197 @@ impl SMC {
         ];
 
         for (key, description) in &known_keys {
-            if let Ok(temp) = self.read_temperature(key) {
-                if temp > 0.0 && temp < 150.0 {
-                    temps.push((description.to_string(), temp));
-                }
+            if let Ok(temp) = self.read_temperature(key)
+                && temp > 0.0
+                && temp < 150.0
+            {
+                temps.push((description.to_string(), temp));
             }
         }
 
         temps
     }
+
+    // Power metrics
+    pub fn get_power_metrics(&mut self) -> PowerMetrics {
+        PowerMetrics {
+            system_power: self.read_float("PSTR").ok(),
+            cpu_power: None,    // Would need IOReport for accurate CPU power
+            gpu_power: None,    // Would need IOReport for accurate GPU power
+            memory_power: None, // Would need IOReport for accurate memory power
+        }
+    }
+
+    // Fan metrics
+    pub fn get_fan_metrics(&mut self) -> FanMetrics {
+        let mut fans = Vec::new();
+
+        // Check for up to 10 fans (most Macs have 0-2)
+        for i in 0..10 {
+            let prefix = format!("F{}", i);
+            let ac_key = format!("{}Ac", prefix);
+
+            // Check if this fan exists
+            if let Ok(actual_rpm) = self.read_float(&ac_key) {
+                let fan = FanInfo {
+                    id: i,
+                    actual_rpm: Some(actual_rpm),
+                    minimum_rpm: self.read_float(&format!("{}Mn", prefix)).ok(),
+                    maximum_rpm: self.read_float(&format!("{}Mx", prefix)).ok(),
+                    target_rpm: self.read_float(&format!("{}Tg", prefix)).ok(),
+                };
+                fans.push(fan);
+            }
+        }
+
+        FanMetrics { fans }
+    }
+
+    // Battery metrics with dynamic type handling and proper unit conversion
+    pub fn get_battery_metrics(&mut self) -> BatteryMetrics {
+        // Battery capacity - usually in mAh
+        let current_capacity = match self.read_value("B0CC") {
+            Ok(SMCValue::Float(v)) => Some(v),
+            Ok(SMCValue::U16(v)) => Some(v as f32),
+            Ok(SMCValue::U32(v)) => Some(v as f32),
+            Ok(SMCValue::I16(v)) => Some(v as f32),
+            _ => None,
+        };
+
+        let full_charge_capacity = match self.read_value("B0FC") {
+            Ok(SMCValue::Float(v)) => Some(v),
+            Ok(SMCValue::U16(v)) => Some(v as f32),
+            Ok(SMCValue::U32(v)) => Some(v as f32),
+            Ok(SMCValue::I16(v)) => Some(v as f32),
+            _ => None,
+        };
+
+        let health_percent = match (current_capacity, full_charge_capacity) {
+            (Some(cc), Some(fc)) if fc > 0.0 => Some((cc / fc) * 100.0),
+            _ => None,
+        };
+
+        // Battery voltage - check if it needs mV to V conversion
+        let voltage = match self.read_value("B0AV") {
+            Ok(SMCValue::Float(v)) => {
+                // If value is > 100, it's likely in mV
+                if v > 100.0 { Some(v / 1000.0) } else { Some(v) }
+            }
+            Ok(SMCValue::U16(v)) => Some(v as f32 / 1000.0), // U16 is usually mV
+            Ok(SMCValue::I16(v)) => Some(v as f32 / 1000.0), // I16 is usually mV
+            _ => None,
+        };
+
+        // Battery current - check if it needs mA to A conversion
+        let current = match self.read_value("B0AC") {
+            Ok(SMCValue::Float(v)) => {
+                // If absolute value is > 100, it's likely in mA
+                if v.abs() > 100.0 {
+                    Some(v / 1000.0)
+                } else {
+                    Some(v)
+                }
+            }
+            Ok(SMCValue::I16(v)) => Some(v as f32 / 1000.0), // I16 is usually mA
+            _ => None,
+        };
+
+        BatteryMetrics {
+            current_capacity,
+            full_charge_capacity,
+            voltage,
+            current,
+            temperature: self
+                .read_temperature("TB0T")
+                .ok()
+                .or_else(|| self.read_temperature("B0TE").ok()),
+            cycle_count: match self.read_value("B0CT") {
+                Ok(SMCValue::U32(v)) => Some(v),
+                Ok(SMCValue::U16(v)) => Some(v as u32),
+                Ok(SMCValue::I16(v)) => Some(v as u32),
+                _ => None,
+            },
+            health_percent,
+        }
+    }
+
+    // Voltage metrics
+    pub fn get_voltage_metrics(&mut self) -> VoltageMetrics {
+        let mut cpu_voltages = Vec::new();
+        let mut gpu_voltages = Vec::new();
+
+        // CPU voltages (VC00-VC43)
+        for i in 0..44 {
+            let key = format!("VC{:02}", i);
+            if let Ok(voltage) = self.read_float(&key) {
+                cpu_voltages.push((key, voltage));
+            }
+        }
+
+        // GPU voltages (VG0*)
+        for i in 0..10 {
+            let key = format!("VG0{}", i);
+            if let Ok(voltage) = self.read_float(&key) {
+                gpu_voltages.push((key, voltage));
+            }
+        }
+
+        VoltageMetrics {
+            cpu_voltages,
+            gpu_voltages,
+            memory_voltage: self.read_float("VDMM").ok(),
+        }
+    }
+
+    // Current metrics
+    pub fn get_current_metrics(&mut self) -> CurrentMetrics {
+        let mut cpu_currents = Vec::new();
+        let mut gpu_currents = Vec::new();
+
+        // CPU currents (IC00-IC43)
+        for i in 0..44 {
+            let key = format!("IC{:02}", i);
+            if let Ok(current) = self.read_float(&key) {
+                cpu_currents.push((key, current));
+            }
+        }
+
+        // GPU currents (IG0*)
+        for i in 0..10 {
+            let key = format!("IG0{}", i);
+            if let Ok(current) = self.read_float(&key) {
+                gpu_currents.push((key, current));
+            }
+        }
+
+        CurrentMetrics {
+            cpu_currents,
+            gpu_currents,
+            battery_current: self
+                .read_float("B0AC")
+                .ok()
+                .or_else(|| self.read_i16("B0AC").ok().map(|v| v as f32 / 1000.0)),
+        }
+    }
+
+    // Get all comprehensive metrics
+    pub fn get_comprehensive_metrics(&mut self) -> ComprehensiveSMCMetrics {
+        ComprehensiveSMCMetrics {
+            temperature: TemperatureMetrics {
+                cpu_temp: self.get_cpu_temperature().ok(),
+                gpu_temp: self.get_gpu_temperature().ok(),
+                sensors: self.get_all_temperatures(),
+            },
+            power: self.get_power_metrics(),
+            fans: self.get_fan_metrics(),
+            battery: self.get_battery_metrics(),
+            voltage: self.get_voltage_metrics(),
+            current: self.get_current_metrics(),
+        }
+    }
 }
 
-impl Drop for SMC {
+impl Drop for Smc {
     fn drop(&mut self) {
         if self.connection != 0 {
             unsafe {
@@ -388,7 +842,7 @@ impl Drop for SMC {
     }
 }
 
-// Public interface for temperature metrics
+// Public interface for SMC metrics
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TemperatureMetrics {
     pub cpu_temp: Option<f32>,
@@ -396,8 +850,65 @@ pub struct TemperatureMetrics {
     pub sensors: Vec<(String, f32)>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PowerMetrics {
+    pub system_power: Option<f32>, // PSTR - total system power in watts
+    pub cpu_power: Option<f32>,    // Various PC** keys
+    pub gpu_power: Option<f32>,    // PG** keys
+    pub memory_power: Option<f32>, // PM** keys
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FanMetrics {
+    pub fans: Vec<FanInfo>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FanInfo {
+    pub id: u8,
+    pub actual_rpm: Option<f32>,  // F*Ac
+    pub minimum_rpm: Option<f32>, // F*Mn
+    pub maximum_rpm: Option<f32>, // F*Mx
+    pub target_rpm: Option<f32>,  // F*Tg
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BatteryMetrics {
+    pub current_capacity: Option<f32>,     // B0CC
+    pub full_charge_capacity: Option<f32>, // B0FC
+    pub voltage: Option<f32>,              // B0AV
+    pub current: Option<f32>,              // B0AC
+    pub temperature: Option<f32>,          // B0TE or TB0T
+    pub cycle_count: Option<u32>,          // B0CT
+    pub health_percent: Option<f32>,       // Calculated from FC/DC
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VoltageMetrics {
+    pub cpu_voltages: Vec<(String, f32)>, // VC** keys
+    pub gpu_voltages: Vec<(String, f32)>, // VG** keys
+    pub memory_voltage: Option<f32>,      // VDMM
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CurrentMetrics {
+    pub cpu_currents: Vec<(String, f32)>, // IC** keys
+    pub gpu_currents: Vec<(String, f32)>, // IG** keys
+    pub battery_current: Option<f32>,     // B0AC
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ComprehensiveSMCMetrics {
+    pub temperature: TemperatureMetrics,
+    pub power: PowerMetrics,
+    pub fans: FanMetrics,
+    pub battery: BatteryMetrics,
+    pub voltage: VoltageMetrics,
+    pub current: CurrentMetrics,
+}
+
 pub fn get_temperature_metrics() -> Result<TemperatureMetrics, Box<dyn std::error::Error>> {
-    let smc = match SMC::new() {
+    let mut smc = match Smc::new() {
         Ok(s) => s,
         Err(_e) => {
             // Return empty metrics if SMC connection fails
@@ -419,4 +930,10 @@ pub fn get_temperature_metrics() -> Result<TemperatureMetrics, Box<dyn std::erro
         gpu_temp,
         sensors,
     })
+}
+
+pub fn get_comprehensive_smc_metrics() -> Result<ComprehensiveSMCMetrics, Box<dyn std::error::Error>>
+{
+    let mut smc = Smc::new()?;
+    Ok(smc.get_comprehensive_metrics())
 }
