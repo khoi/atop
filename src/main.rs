@@ -1,26 +1,46 @@
 mod memory;
 
-use clap::Parser;
 use memory::MemoryMetrics;
 use serde::Serialize;
 use serde_json;
-
-#[derive(Parser)]
-#[command(name = "atop")]
-#[command(about = "System memory metrics monitoring tool", long_about = None)]
-struct Args {
-    /// Output as JSON
-    #[arg(long)]
-    json: bool,
-}
+use std::env;
 
 #[derive(Serialize)]
 struct SystemMetrics {
     memory: MemoryMetrics,
 }
 
+fn print_usage() {
+    eprintln!("Usage: atop [OPTIONS]");
+    eprintln!();
+    eprintln!("System memory metrics monitoring tool");
+    eprintln!();
+    eprintln!("OPTIONS:");
+    eprintln!("    --json    Output as JSON");
+    eprintln!("    --help    Print this help message");
+}
+
 fn main() {
-    let args = Args::parse();
+    let args: Vec<String> = env::args().collect();
+    
+    // Parse arguments
+    let mut json_output = false;
+    
+    for arg in &args[1..] {
+        match arg.as_str() {
+            "--json" => json_output = true,
+            "--help" | "-h" => {
+                print_usage();
+                std::process::exit(0);
+            }
+            _ => {
+                eprintln!("Error: Unknown argument '{}'", arg);
+                eprintln!();
+                print_usage();
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Get real memory metrics
     let memory_metrics = match memory::get_memory_metrics() {
@@ -35,7 +55,7 @@ fn main() {
         memory: memory_metrics,
     };
 
-    if args.json {
+    if json_output {
         // Output as JSON
         let json = serde_json::to_string_pretty(&system_metrics).unwrap();
         println!("{}", json);
