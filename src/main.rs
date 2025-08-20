@@ -19,32 +19,34 @@ struct FastSampler {
 
 impl FastSampler {
     fn new() -> Result<Self, String> {
-        let cpu_metrics = cpu::get_cpu_metrics()
-            .map_err(|e| format!("Error getting CPU metrics: {}", e))?;
-        
+        let cpu_metrics =
+            cpu::get_cpu_metrics().map_err(|e| format!("Error getting CPU metrics: {}", e))?;
+
         let perf_monitor = IOReportPerf::new().ok();
-        
+
         Ok(Self {
             cpu_metrics,
             perf_monitor,
         })
     }
-    
+
     fn sample(&self, interval_ms: u32) -> Result<SystemMetrics, String> {
         // Get real memory metrics (dynamic)
         let memory_metrics = memory::get_memory_metrics()
             .map_err(|e| format!("Error getting memory metrics: {}", e))?;
-        
+
         // Use cached CPU metrics
         let cpu_metrics = self.cpu_metrics.clone();
-        
+
         // Get power metrics with the same interval
         let power_metrics = iokit::get_power_metrics_with_interval(interval_ms as u64).ok();
-        
+
         // Get performance metrics using cached monitor
-        let perf_sample = self.perf_monitor.as_ref()
+        let perf_sample = self
+            .perf_monitor
+            .as_ref()
             .map(|monitor| monitor.get_sample(interval_ms as u64));
-        
+
         Ok(SystemMetrics {
             memory: memory_metrics,
             cpu: cpu_metrics,
@@ -78,19 +80,21 @@ fn print_usage() {
     eprintln!();
     eprintln!("OPTIONS:");
     eprintln!("    --json               Output as JSON");
-    eprintln!("    --sample, -s <N>     Number of samples to collect (0 = infinite, only with --json)");
+    eprintln!(
+        "    --sample, -s <N>     Number of samples to collect (0 = infinite, only with --json)"
+    );
     eprintln!("    --interval, -i <MS>  Update interval in milliseconds (default: 1000, min: 100)");
     eprintln!("    --help               Print this help message");
 }
 
 fn collect_metrics(interval_ms: u32) -> Result<SystemMetrics, String> {
     // Get real memory metrics
-    let memory_metrics = memory::get_memory_metrics()
-        .map_err(|e| format!("Error getting memory metrics: {}", e))?;
+    let memory_metrics =
+        memory::get_memory_metrics().map_err(|e| format!("Error getting memory metrics: {}", e))?;
 
     // Get CPU metrics
-    let cpu_metrics = cpu::get_cpu_metrics()
-        .map_err(|e| format!("Error getting CPU metrics: {}", e))?;
+    let cpu_metrics =
+        cpu::get_cpu_metrics().map_err(|e| format!("Error getting CPU metrics: {}", e))?;
 
     // Get power metrics
     let power_metrics = iokit::get_power_metrics_with_interval(interval_ms as u64).ok();
@@ -199,21 +203,21 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        
+
         let mut counter = 0u32;
-        
+
         loop {
             match sampler.sample(interval_ms) {
                 Ok(metrics) => {
                     // Output JSON without pretty printing for streaming
                     let json = serde_json::to_string(&metrics).unwrap();
                     println!("{}", json);
-                    
+
                     counter += 1;
                     if samples > 0 && counter >= samples {
                         break;
                     }
-                    
+
                     // No sleep - the interval is controlled by the sampling duration
                 }
                 Err(e) => {
@@ -224,7 +228,7 @@ fn main() {
         }
         return;
     }
-    
+
     // Single collection mode
     let system_metrics = match collect_metrics(interval_ms) {
         Ok(metrics) => metrics,
