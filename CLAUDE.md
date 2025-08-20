@@ -1,50 +1,81 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project Overview
 
-`atop` is a sudoless comprehensive system metrics monitoring tool for macOS that retrieves CPU, memory, temperature, and power information using low-level system APIs and SMC (System Management Controller) access.
-
-Note: Apple Silicon only. Intel Macs are not supported.
+`atop` is a sudoless system metrics monitoring tool for macOS (Apple Silicon only) that collects CPU, memory, and power metrics using low-level system APIs without requiring elevated privileges.
 
 ## Architecture
 
-The codebase is a Rust CLI application with modular metric collection:
+### Metrics Collection Flow
 
-- **src/main.rs**: CLI entry point with argument parsing and output formatting (JSON/human-readable)
-- **src/memory.rs**: Memory metrics via macOS mach/vm_stat system calls
-- **src/cpu.rs**: CPU information using sysctl (cores, frequency, chip details)
-- **src/smc.rs**: SMC interface for temperature, power, fans, battery, and voltage metrics
-- **src/iokit.rs**: IOReport-based power monitoring (CPU, GPU, ANE, memory power)
+```
+atop
+├── Single Sample Mode (default)
+│   └── collect_metrics() → All metrics fresh
+└── Continuous Sampling Mode (--sample N)
+    └── FastSampler
+        ├── Cached: CPU topology (static hardware info)
+        ├── Cached: IOReportPerf instance
+        └── Fresh: Memory, Power, Performance metrics
+```
+
+### Module Structure
+
+- **src/main.rs**: CLI entry point, argument parsing, `FastSampler` for optimized sampling
+- **src/memory.rs**: Memory metrics via mach kernel APIs (~30µs per collection)
+- **src/cpu.rs**: CPU topology via sysctl + IOKit (cached in sampling mode)
+- **src/iokit.rs**: Power metrics via IOReport Energy Model (100ms-1000ms samples)
+- **src/ioreport_perf.rs**: CPU/GPU frequency and utilization via IOReport
+- **src/smc.rs**: SMC debug interface (only for --smc flags, not used in normal operation)
+- **src/utils.rs**: IOKit utilities for CPU frequency detection
+
+### Key Data Structures
+
+- `SystemMetrics`: Main output structure (no temperature field as of latest version)
+- `FastSampler`: Optimized sampler with cached CPU metrics and IOReportPerf instance
+- Power/Performance metrics use IOReport's two-snapshot delta approach
 
 ## Development Commands
 
 ### Build and Run
 
 ```bash
-cargo build              # Development build
-cargo build --release    # Release build (optimized)
-cargo run                # Run with default output
-cargo run -- --json      # JSON output
-cargo run -- --smc       # Debug mode: show raw SMC data
-cargo run -- --smc-nice  # Formatted SMC metrics (power, fans, battery)
+cargo build --release           # Optimized build (required for performance testing)
+cargo run -- --json             # Single JSON output
+cargo run -- --json -s 10 -i 500  # 10 samples at 500ms intervals  
+cargo run -- --smc-nice         # SMC debug output (fans, battery, voltage)
+```
+
+### Testing Sampling Performance
+
+```bash
+# Test sampling performance
+time ./target/release/atop --json -s 10 -i 100 2>/dev/null | wc -l
 ```
 
 ### Code Quality
 
 ```bash
-cargo fmt                # Format code
-cargo clippy             # Run linter
+cargo clippy    # Must pass with no warnings
+cargo fmt       # Format code
 ```
 
-## Development Guidelines
+## Critical Implementation Details
 
-1. Always run `cargo clippy` and fix all the warnings before concluding the task.
-2. Remove all dead code
-3. Always test with `cargo run -- --json` and ensure all JSON values are non-null
+### Sampling Intervals
+- The `--interval` parameter controls the IOReport sampling window duration, NOT a sleep between samples
+- Both power and performance metrics must use the same interval for consistency
+- Minimum interval is 100ms (enforced in argument parsing)
 
-## Key Implementation Details
+### Performance Optimizations
+- CPU metrics are cached in `FastSampler` (static hardware info doesn't change)
+- IOReportPerf instance is reused across samples to avoid recreation overhead
+- No SMC access in normal operation (removed ~2s overhead from temperature sensors)
+- Power metrics interval aligned with performance metrics interval
 
-- Direct SMC access requires elevated privileges on some systems
-- IOKit power metrics use IOReport framework with fallback to SMC system power
-- Temperature sensors dynamically detect available keys (TC0P, TG0D variants)
-- Battery metrics include cycle count, health percentage, and charging state
+### IOReport Timing
+- `IOReportCreateSamples` takes two snapshots with a sleep between them
+- The sleep duration IS the interval parameter
+- Total time per sample = interval + overhead (~5-10ms for memory/CPU collection)
