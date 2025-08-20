@@ -166,10 +166,7 @@ Creating IOReport subscriptions takes ~50-100ms. Reusing the instance saves this
 ### 3. Parallel Collection
 Power and performance metrics are collected simultaneously within IOReport framework.
 
-### 4. No SMC Access
-Removed System Management Controller access which added ~2s overhead for temperature sensors.
-
-### 5. Aligned Intervals
+### 4. Aligned Intervals
 Power and performance metrics use the same interval, ensuring consistent time windows.
 
 ## Memory Footprint

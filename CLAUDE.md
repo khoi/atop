@@ -28,7 +28,6 @@ atop
 - **src/cpu.rs**: CPU topology via sysctl + IOKit (cached in sampling mode)
 - **src/iokit.rs**: Power metrics via IOReport Energy Model (100ms-1000ms samples)
 - **src/ioreport_perf.rs**: CPU/GPU frequency and utilization via IOReport
-- **src/smc.rs**: SMC debug interface (only for --smc flags, not used in normal operation)
 - **src/utils.rs**: IOKit utilities for CPU frequency detection
 
 ### Key Data Structures
@@ -44,8 +43,7 @@ atop
 ```bash
 cargo build --release           # Optimized build (required for performance testing)
 cargo run -- --json             # Single JSON output
-cargo run -- --json -s 10 -i 500  # 10 samples at 500ms intervals  
-cargo run -- --smc-nice         # SMC debug output (fans, battery, voltage)
+cargo run -- --json -s 10 -i 500  # 10 samples at 500ms intervals
 ```
 
 ### Testing Sampling Performance
@@ -65,17 +63,23 @@ cargo fmt       # Format code
 ## Critical Implementation Details
 
 ### Sampling Intervals
+
 - The `--interval` parameter controls the IOReport sampling window duration, NOT a sleep between samples
 - Both power and performance metrics must use the same interval for consistency
 - Minimum interval is 100ms (enforced in argument parsing)
 
 ### Performance Optimizations
+
 - CPU metrics are cached in `FastSampler` (static hardware info doesn't change)
 - IOReportPerf instance is reused across samples to avoid recreation overhead
-- No SMC access in normal operation (removed ~2s overhead from temperature sensors)
 - Power metrics interval aligned with performance metrics interval
 
 ### IOReport Timing
+
 - `IOReportCreateSamples` takes two snapshots with a sleep between them
 - The sleep duration IS the interval parameter
 - Total time per sample = interval + overhead (~5-10ms for memory/CPU collection)
+
+## Developmetn Guidelines
+
+- Remove all dead code, unused variables.

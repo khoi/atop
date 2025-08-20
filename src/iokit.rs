@@ -517,12 +517,11 @@ pub struct PowerMetrics {
     pub ram_power: f32,     // Watts
     pub gpu_ram_power: f32, // Watts
     pub all_power: f32,     // Combined CPU+GPU+ANE
-    pub sys_power: f32,     // Total system power from SMC
+    pub sys_power: f32,     // Total system power
 }
 
 // Collect power metrics using IOReport with custom interval
 pub fn get_power_metrics_with_interval(
-    smc_sys_power: Option<f32>,
     interval_ms: u64,
 ) -> Result<PowerMetrics, Box<dyn std::error::Error>> {
     // Create IOReport instance for Energy Model group
@@ -564,8 +563,8 @@ pub fn get_power_metrics_with_interval(
     // Calculate combined power
     metrics.all_power = metrics.cpu_power + metrics.gpu_power + metrics.ane_power;
 
-    // Use SMC system power if available, otherwise fall back to calculated total
-    metrics.sys_power = smc_sys_power.unwrap_or(metrics.all_power);
+    // Use calculated total for system power
+    metrics.sys_power = metrics.all_power;
 
     Ok(metrics)
 }

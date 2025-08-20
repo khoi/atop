@@ -2,7 +2,6 @@ mod cpu;
 mod iokit;
 mod ioreport_perf;
 mod memory;
-mod smc;
 mod utils;
 
 use cpu::CpuMetrics;
@@ -10,7 +9,6 @@ use iokit::PowerMetrics;
 use ioreport_perf::IOReportPerf;
 use memory::MemoryMetrics;
 use serde::Serialize;
-use smc::SmcDebugValue;
 use std::env;
 
 // Sampler struct to hold cached resources
@@ -40,8 +38,8 @@ impl FastSampler {
         // Use cached CPU metrics
         let cpu_metrics = self.cpu_metrics.clone();
         
-        // Get power metrics with the same interval (no SMC fallback)
-        let power_metrics = iokit::get_power_metrics_with_interval(None, interval_ms as u64).ok();
+        // Get power metrics with the same interval
+        let power_metrics = iokit::get_power_metrics_with_interval(interval_ms as u64).ok();
         
         // Get performance metrics using cached monitor
         let perf_sample = self.perf_monitor.as_ref()
@@ -82,16 +80,10 @@ fn print_usage() {
     eprintln!("    --json               Output as JSON");
     eprintln!("    --sample, -s <N>     Number of samples to collect (0 = infinite, only with --json)");
     eprintln!("    --interval, -i <MS>  Update interval in milliseconds (default: 1000, min: 100)");
-    eprintln!("    --smc                Show ALL SMC data for debugging (includes raw values)");
-    eprintln!("    --smc-nice           Show formatted SMC metrics (power, fans, battery, etc.)");
     eprintln!("    --help               Print this help message");
 }
 
 fn collect_metrics(interval_ms: u32) -> Result<SystemMetrics, String> {
-    collect_metrics_internal(interval_ms, false)
-}
-
-fn collect_metrics_internal(interval_ms: u32, _skip_smc: bool) -> Result<SystemMetrics, String> {
     // Get real memory metrics
     let memory_metrics = memory::get_memory_metrics()
         .map_err(|e| format!("Error getting memory metrics: {}", e))?;
@@ -100,8 +92,8 @@ fn collect_metrics_internal(interval_ms: u32, _skip_smc: bool) -> Result<SystemM
     let cpu_metrics = cpu::get_cpu_metrics()
         .map_err(|e| format!("Error getting CPU metrics: {}", e))?;
 
-    // Get power metrics (no SMC fallback anymore)
-    let power_metrics = iokit::get_power_metrics_with_interval(None, interval_ms as u64).ok();
+    // Get power metrics
+    let power_metrics = iokit::get_power_metrics_with_interval(interval_ms as u64).ok();
 
     // Get performance metrics (CPU/GPU frequency and utilization)
     let perf_sample = if let Ok(perf_monitor) = IOReportPerf::new() {
@@ -130,8 +122,6 @@ fn main() {
 
     // Parse arguments
     let mut json_output = false;
-    let mut debug_smc = false;
-    let mut nice_smc = false;
     let mut sample_count: Option<u32> = None;
     let mut interval_ms: u32 = 1000; // Default 1 second
 
@@ -139,8 +129,6 @@ fn main() {
     while i < args.len() {
         match args[i].as_str() {
             "--json" => json_output = true,
-            "--smc" => debug_smc = true,
-            "--smc-nice" => nice_smc = true,
             "--sample" | "-s" => {
                 if i + 1 < args.len() {
                     match args[i + 1].parse::<u32>() {
@@ -197,168 +185,6 @@ fn main() {
     if sample_count.is_some() && !json_output {
         eprintln!("Error: --sample can only be used with --json");
         std::process::exit(1);
-    }
-
-
-    // If debug SMC flag is set, show ALL SMC data
-    if debug_smc {
-        match smc::get_all_smc_debug_data() {
-            Ok(debug_data) => {
-                if json_output {
-                    let json = serde_json::to_string_pretty(&debug_data).unwrap();
-                    println!("{}", json);
-                } else {
-                    println!("=== SMC Debug Data ===");
-                    println!("Total Keys: {}", debug_data.total_keys);
-                    println!("Successfully Read: {}\n", debug_data.keys.len());
-
-                    for key_data in &debug_data.keys {
-                        println!(
-                            "Key: {} (type: {}, size: {})",
-                            key_data.key, key_data.type_str, key_data.size
-                        );
-
-                        if let Some(ref value) = key_data.value {
-                            print!("  Value: ");
-                            match value {
-                                SmcDebugValue::Float(f) => println!("{:.3}", f),
-                                SmcDebugValue::U8(v) => println!("{}", v),
-                                SmcDebugValue::U16(v) => println!("{}", v),
-                                SmcDebugValue::U32(v) => println!("{}", v),
-                                SmcDebugValue::I8(v) => println!("{}", v),
-                                SmcDebugValue::I16(v) => println!("{}", v),
-                                SmcDebugValue::Bool(b) => println!("{}", b),
-                                SmcDebugValue::String(s) => println!("\"{}\"", s),
-                                SmcDebugValue::Bytes(_) => println!("<binary data>"),
-                            }
-                        }
-
-                        if !key_data.raw_bytes.is_empty() {
-                            print!("  Raw: ");
-                            for byte in &key_data.raw_bytes {
-                                print!("{:02x} ", byte);
-                            }
-                            println!();
-                        }
-
-                        if let Some(ref error) = key_data.error {
-                            println!("  Error: {}", error);
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("Error getting SMC debug data: {}", e);
-                eprintln!("This may require elevated privileges or SMC access permissions.");
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
-
-    // If nice SMC flag is set, show formatted SMC data
-    if nice_smc {
-        match smc::get_comprehensive_smc_metrics() {
-            Ok(metrics) => {
-                if json_output {
-                    let json = serde_json::to_string_pretty(&metrics).unwrap();
-                    println!("{}", json);
-                } else {
-                    println!("=== Comprehensive SMC Metrics ===\n");
-
-                    // Temperature
-                    println!("Temperature:");
-                    if let Some(cpu) = metrics.temperature.cpu_temp {
-                        println!("  CPU Average: {:.1}°C", cpu);
-                    }
-                    if let Some(gpu) = metrics.temperature.gpu_temp {
-                        println!("  GPU Average: {:.1}°C", gpu);
-                    }
-
-                    // Power
-                    println!("\nPower:");
-                    if let Some(sys_power) = metrics.power.system_power {
-                        println!("  System Total: {:.2} W", sys_power);
-                    }
-
-                    // Fans
-                    if !metrics.fans.fans.is_empty() {
-                        println!("\nFans:");
-                        for fan in &metrics.fans.fans {
-                            println!("  Fan {}:", fan.id);
-                            if let Some(rpm) = fan.actual_rpm {
-                                println!("    Current: {:.0} RPM", rpm);
-                            }
-                            if let Some(target) = fan.target_rpm {
-                                println!("    Target: {:.0} RPM", target);
-                            }
-                            if let Some(min) = fan.minimum_rpm {
-                                println!("    Min: {:.0} RPM", min);
-                            }
-                            if let Some(max) = fan.maximum_rpm {
-                                println!("    Max: {:.0} RPM", max);
-                            }
-                        }
-                    }
-
-                    // Battery
-                    println!("\nBattery:");
-                    if let Some(cc) = metrics.battery.current_capacity {
-                        println!("  Current Capacity: {:.1} mAh", cc);
-                    }
-                    if let Some(fc) = metrics.battery.full_charge_capacity {
-                        println!("  Full Charge Capacity: {:.1} mAh", fc);
-                    }
-                    if let Some(health) = metrics.battery.health_percent {
-                        println!("  Health: {:.1}%", health);
-                    }
-                    if let Some(voltage) = metrics.battery.voltage {
-                        println!("  Voltage: {:.2} V", voltage);
-                    }
-                    if let Some(current) = metrics.battery.current {
-                        println!("  Current: {:.2} A", current);
-                    }
-                    if let Some(temp) = metrics.battery.temperature {
-                        println!("  Temperature: {:.1}°C", temp);
-                    }
-                    if let Some(cycles) = metrics.battery.cycle_count {
-                        println!("  Cycle Count: {}", cycles);
-                    }
-
-                    // Voltages (summarized)
-                    if !metrics.voltage.cpu_voltages.is_empty() {
-                        println!(
-                            "\nCPU Voltages: {} sensors detected",
-                            metrics.voltage.cpu_voltages.len()
-                        );
-                        let avg: f32 = metrics
-                            .voltage
-                            .cpu_voltages
-                            .iter()
-                            .map(|(_, v)| v)
-                            .sum::<f32>()
-                            / metrics.voltage.cpu_voltages.len() as f32;
-                        println!("  Average: {:.3} V", avg);
-                    }
-
-                    // Currents (summarized)
-                    if !metrics.current.cpu_currents.is_empty() {
-                        println!(
-                            "\nCPU Currents: {} sensors detected",
-                            metrics.current.cpu_currents.len()
-                        );
-                        let total: f32 = metrics.current.cpu_currents.iter().map(|(_, i)| i).sum();
-                        println!("  Total: {:.2} A", total);
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("Error getting comprehensive SMC metrics: {}", e);
-                eprintln!("This may require elevated privileges or SMC access permissions.");
-                std::process::exit(1);
-            }
-        }
-        return;
     }
 
     // Handle sampling mode for JSON output
