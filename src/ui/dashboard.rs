@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::io;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
@@ -138,7 +139,7 @@ impl DashboardState {
 }
 
 pub struct Dashboard {
-    refresh_interval: Duration,
+    refresh_interval: Arc<RwLock<Duration>>,
     state: DashboardState,
     metric_receiver: Receiver<MetricEvent>,
 }
@@ -146,15 +147,18 @@ pub struct Dashboard {
 impl Dashboard {
     pub fn new() -> io::Result<Self> {
         let (tx, rx) = mpsc::channel::<MetricEvent>();
-        let refresh_interval = Duration::from_millis(1000);
+        let refresh_interval = Arc::new(RwLock::new(Duration::from_millis(1000)));
 
         // Spawn metric collection thread that runs continuously
         let tx_clone = tx;
-        let interval = refresh_interval.clone();
+        let interval_clone = Arc::clone(&refresh_interval);
         thread::spawn(move || {
             let perf_monitor = ioreport_perf::IOReportPerf::new().ok();
 
             loop {
+                // Read the current interval from the shared RwLock
+                let interval = *interval_clone.read().unwrap();
+
                 // Collect all metrics in one go
                 let memory = memory::get_memory_metrics().ok();
                 let power =
@@ -245,18 +249,18 @@ impl Dashboard {
                             KeyCode::Char('q') | KeyCode::Esc => break,
                             KeyCode::Char('+') | KeyCode::Char('=') => {
                                 // Increase refresh interval (slower refresh)
-                                let millis = self.refresh_interval.as_millis() as u64;
+                                let mut interval = self.refresh_interval.write().unwrap();
+                                let millis = interval.as_millis() as u64;
                                 if millis < 5000 {
-                                    self.refresh_interval = Duration::from_millis(millis + 100);
-                                    // TODO: Signal the metric thread to update interval
+                                    *interval = Duration::from_millis(millis + 100);
                                 }
                             }
                             KeyCode::Char('-') => {
                                 // Decrease refresh interval (faster refresh)
-                                let millis = self.refresh_interval.as_millis() as u64;
+                                let mut interval = self.refresh_interval.write().unwrap();
+                                let millis = interval.as_millis() as u64;
                                 if millis > 100 {
-                                    self.refresh_interval = Duration::from_millis(millis - 100);
-                                    // TODO: Signal the metric thread to update interval
+                                    *interval = Duration::from_millis(millis - 100);
                                 }
                             }
                             _ => {}
@@ -316,7 +320,7 @@ impl Dashboard {
         // ==============================================================================
         let footer_text = format!(
             "Refresh: {:.1}s | [+/-] Adjust Rate | [q/ESC] Quit",
-            self.refresh_interval.as_secs_f32()
+            self.refresh_interval.read().unwrap().as_secs_f32()
         );
         let footer = Paragraph::new(footer_text)
             .block(Block::default().borders(Borders::ALL))
