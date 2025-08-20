@@ -10,14 +10,62 @@ use iokit::PowerMetrics;
 use ioreport_perf::IOReportPerf;
 use memory::MemoryMetrics;
 use serde::Serialize;
-use smc::{SmcDebugValue, TemperatureMetrics};
+use smc::SmcDebugValue;
 use std::env;
+
+// Sampler struct to hold cached resources
+struct FastSampler {
+    cpu_metrics: CpuMetrics,
+    perf_monitor: Option<IOReportPerf>,
+}
+
+impl FastSampler {
+    fn new() -> Result<Self, String> {
+        let cpu_metrics = cpu::get_cpu_metrics()
+            .map_err(|e| format!("Error getting CPU metrics: {}", e))?;
+        
+        let perf_monitor = IOReportPerf::new().ok();
+        
+        Ok(Self {
+            cpu_metrics,
+            perf_monitor,
+        })
+    }
+    
+    fn sample(&self, interval_ms: u32) -> Result<SystemMetrics, String> {
+        // Get real memory metrics (dynamic)
+        let memory_metrics = memory::get_memory_metrics()
+            .map_err(|e| format!("Error getting memory metrics: {}", e))?;
+        
+        // Use cached CPU metrics
+        let cpu_metrics = self.cpu_metrics.clone();
+        
+        // Get power metrics with the same interval (no SMC fallback)
+        let power_metrics = iokit::get_power_metrics_with_interval(None, interval_ms as u64).ok();
+        
+        // Get performance metrics using cached monitor
+        let perf_sample = self.perf_monitor.as_ref()
+            .map(|monitor| monitor.get_sample(interval_ms as u64));
+        
+        Ok(SystemMetrics {
+            memory: memory_metrics,
+            cpu: cpu_metrics,
+            power: power_metrics,
+            ecpu_usage: perf_sample.as_ref().map(|p| p.ecpu_usage),
+            pcpu_usage: perf_sample.as_ref().map(|p| p.pcpu_usage),
+            gpu_usage: perf_sample.as_ref().map(|p| p.gpu_usage),
+            unix_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        })
+    }
+}
 
 #[derive(Serialize)]
 struct SystemMetrics {
     memory: MemoryMetrics,
     cpu: CpuMetrics,
-    temperature: Option<TemperatureMetrics>,
     power: Option<PowerMetrics>,
     ecpu_usage: Option<(u32, f32)>,
     pcpu_usage: Option<(u32, f32)>,
@@ -31,10 +79,50 @@ fn print_usage() {
     eprintln!("System memory metrics monitoring tool");
     eprintln!();
     eprintln!("OPTIONS:");
-    eprintln!("    --json      Output as JSON");
-    eprintln!("    --smc       Show ALL SMC data for debugging (includes raw values)");
-    eprintln!("    --smc-nice  Show formatted SMC metrics (power, fans, battery, etc.)");
-    eprintln!("    --help      Print this help message");
+    eprintln!("    --json               Output as JSON");
+    eprintln!("    --sample, -s <N>     Number of samples to collect (0 = infinite, only with --json)");
+    eprintln!("    --interval, -i <MS>  Update interval in milliseconds (default: 1000, min: 100)");
+    eprintln!("    --smc                Show ALL SMC data for debugging (includes raw values)");
+    eprintln!("    --smc-nice           Show formatted SMC metrics (power, fans, battery, etc.)");
+    eprintln!("    --help               Print this help message");
+}
+
+fn collect_metrics(interval_ms: u32) -> Result<SystemMetrics, String> {
+    collect_metrics_internal(interval_ms, false)
+}
+
+fn collect_metrics_internal(interval_ms: u32, _skip_smc: bool) -> Result<SystemMetrics, String> {
+    // Get real memory metrics
+    let memory_metrics = memory::get_memory_metrics()
+        .map_err(|e| format!("Error getting memory metrics: {}", e))?;
+
+    // Get CPU metrics
+    let cpu_metrics = cpu::get_cpu_metrics()
+        .map_err(|e| format!("Error getting CPU metrics: {}", e))?;
+
+    // Get power metrics (no SMC fallback anymore)
+    let power_metrics = iokit::get_power_metrics_with_interval(None, interval_ms as u64).ok();
+
+    // Get performance metrics (CPU/GPU frequency and utilization)
+    let perf_sample = if let Ok(perf_monitor) = IOReportPerf::new() {
+        // Sample for the specified interval to get accurate readings
+        Some(perf_monitor.get_sample(interval_ms as u64))
+    } else {
+        None
+    };
+
+    Ok(SystemMetrics {
+        memory: memory_metrics,
+        cpu: cpu_metrics,
+        power: power_metrics,
+        ecpu_usage: perf_sample.as_ref().map(|p| p.ecpu_usage),
+        pcpu_usage: perf_sample.as_ref().map(|p| p.pcpu_usage),
+        gpu_usage: perf_sample.as_ref().map(|p| p.gpu_usage),
+        unix_time: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    })
 }
 
 fn main() {
@@ -44,42 +132,73 @@ fn main() {
     let mut json_output = false;
     let mut debug_smc = false;
     let mut nice_smc = false;
+    let mut sample_count: Option<u32> = None;
+    let mut interval_ms: u32 = 1000; // Default 1 second
 
-    for arg in &args[1..] {
-        match arg.as_str() {
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
             "--json" => json_output = true,
             "--smc" => debug_smc = true,
             "--smc-nice" => nice_smc = true,
+            "--sample" | "-s" => {
+                if i + 1 < args.len() {
+                    match args[i + 1].parse::<u32>() {
+                        Ok(n) => {
+                            sample_count = Some(n);
+                            i += 1; // Skip the next argument since we consumed it
+                        }
+                        Err(_) => {
+                            eprintln!("Error: Invalid sample count '{}'", args[i + 1]);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    eprintln!("Error: --sample requires a numeric argument");
+                    std::process::exit(1);
+                }
+            }
+            "--interval" | "-i" => {
+                if i + 1 < args.len() {
+                    match args[i + 1].parse::<u32>() {
+                        Ok(n) if n >= 100 => {
+                            interval_ms = n;
+                            i += 1; // Skip the next argument since we consumed it
+                        }
+                        Ok(_) => {
+                            eprintln!("Error: Interval must be at least 100ms");
+                            std::process::exit(1);
+                        }
+                        Err(_) => {
+                            eprintln!("Error: Invalid interval '{}'", args[i + 1]);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    eprintln!("Error: --interval requires a numeric argument");
+                    std::process::exit(1);
+                }
+            }
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
             }
             _ => {
-                eprintln!("Error: Unknown argument '{}'", arg);
+                eprintln!("Error: Unknown argument '{}'", args[i]);
                 eprintln!();
                 print_usage();
                 std::process::exit(1);
             }
         }
+        i += 1;
     }
 
-    // Get real memory metrics
-    let memory_metrics = match memory::get_memory_metrics() {
-        Ok(metrics) => metrics,
-        Err(e) => {
-            eprintln!("Error getting memory metrics: {}", e);
-            std::process::exit(1);
-        }
-    };
+    // Validate sample flag is only used with JSON
+    if sample_count.is_some() && !json_output {
+        eprintln!("Error: --sample can only be used with --json");
+        std::process::exit(1);
+    }
 
-    // Get CPU metrics
-    let cpu_metrics = match cpu::get_cpu_metrics() {
-        Ok(metrics) => metrics,
-        Err(e) => {
-            eprintln!("Error getting CPU metrics: {}", e);
-            std::process::exit(1);
-        }
-    };
 
     // If debug SMC flag is set, show ALL SMC data
     if debug_smc {
@@ -242,44 +361,56 @@ fn main() {
         return;
     }
 
-    // Get temperature metrics (optional, may fail without permissions)
-    let temperature_metrics = smc::get_temperature_metrics().ok();
-
-    // Get power metrics (optional, may fail without permissions)
-    // First try to get SMC system power for fallback
-    let smc_sys_power = if let Ok(mut smc) = smc::get_smc_connection() {
-        smc.read_float("PSTR").ok()
-    } else {
-        None
-    };
-
-    let power_metrics = iokit::get_power_metrics(smc_sys_power).ok();
-
-    // Get performance metrics (CPU/GPU frequency and utilization)
-    let perf_sample = if let Ok(perf_monitor) = IOReportPerf::new() {
-        // Sample for 250ms to get accurate readings
-        Some(perf_monitor.get_sample(250))
-    } else {
-        None
-    };
-
-    let system_metrics = SystemMetrics {
-        memory: memory_metrics,
-        cpu: cpu_metrics,
-        temperature: temperature_metrics,
-        power: power_metrics,
-        ecpu_usage: perf_sample.as_ref().map(|p| p.ecpu_usage),
-        pcpu_usage: perf_sample.as_ref().map(|p| p.pcpu_usage),
-        gpu_usage: perf_sample.as_ref().map(|p| p.gpu_usage),
-        unix_time: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
+    // Handle sampling mode for JSON output
+    if let Some(samples) = sample_count
+        && json_output
+    {
+        // Create sampler with cached resources
+        let sampler = match FastSampler::new() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error initializing sampler: {}", e);
+                std::process::exit(1);
+            }
+        };
+        
+        let mut counter = 0u32;
+        
+        loop {
+            match sampler.sample(interval_ms) {
+                Ok(metrics) => {
+                    // Output JSON without pretty printing for streaming
+                    let json = serde_json::to_string(&metrics).unwrap();
+                    println!("{}", json);
+                    
+                    counter += 1;
+                    if samples > 0 && counter >= samples {
+                        break;
+                    }
+                    
+                    // No sleep - the interval is controlled by the sampling duration
+                }
+                Err(e) => {
+                    eprintln!("Error collecting metrics: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        return;
+    }
+    
+    // Single collection mode
+    let system_metrics = match collect_metrics(interval_ms) {
+        Ok(metrics) => metrics,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
     };
 
     if json_output {
-        // Output as JSON
-        let json = serde_json::to_string_pretty(&system_metrics).unwrap();
+        // Output as JSON (not prettified for consistency with sampling mode)
+        let json = serde_json::to_string(&system_metrics).unwrap();
         println!("{}", json);
     } else {
         // Output as human-readable text
@@ -307,22 +438,6 @@ fn main() {
         }
         if let Some((freq, util)) = system_metrics.gpu_usage {
             println!("  GPU Usage: {} MHz ({:.1}%)", freq, util);
-        }
-
-        if let Some(ref temps) = system_metrics.temperature {
-            println!("\nTemperature Metrics:");
-            if let Some(cpu_temp) = temps.cpu_temp {
-                println!("  CPU: {:.1}°C", cpu_temp);
-            }
-            if let Some(gpu_temp) = temps.gpu_temp {
-                println!("  GPU: {:.1}°C", gpu_temp);
-            }
-            if !temps.sensors.is_empty() && temps.sensors.len() > 2 {
-                println!("  Additional Sensors:");
-                for (name, temp) in &temps.sensors {
-                    println!("    {}: {:.1}°C", name, temp);
-                }
-            }
         }
 
         println!("\nMemory Metrics:");

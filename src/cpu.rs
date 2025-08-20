@@ -4,7 +4,7 @@ use std::ffi::CString;
 use std::mem;
 use std::process::Command;
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct CpuMetrics {
     pub physical_cores: u32,
     pub logical_cores: u32,

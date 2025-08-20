@@ -520,15 +520,16 @@ pub struct PowerMetrics {
     pub sys_power: f32,     // Total system power from SMC
 }
 
-// Collect power metrics using IOReport
-pub fn get_power_metrics(
+// Collect power metrics using IOReport with custom interval
+pub fn get_power_metrics_with_interval(
     smc_sys_power: Option<f32>,
+    interval_ms: u64,
 ) -> Result<PowerMetrics, Box<dyn std::error::Error>> {
     // Create IOReport instance for Energy Model group
     let ioreport = IOReport::new(vec![("Energy Model", None)])?;
 
-    // Take a 1000ms sample to get power readings
-    let sample = ioreport.sample_power(1000)?;
+    // Take a sample with specified interval to get power readings
+    let sample = ioreport.sample_power(interval_ms)?;
     let actual_duration_ms = sample.duration_ms();
 
     let mut metrics = PowerMetrics::default();

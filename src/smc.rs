@@ -1011,31 +1011,6 @@ pub enum SmcDebugValue {
     Bytes(Vec<u8>),
 }
 
-pub fn get_temperature_metrics() -> Result<TemperatureMetrics, Box<dyn std::error::Error>> {
-    let mut smc = match Smc::new() {
-        Ok(s) => s,
-        Err(_e) => {
-            // Return empty metrics if SMC connection fails
-            // This is common on macOS without proper permissions
-            return Ok(TemperatureMetrics {
-                cpu_temp: None,
-                gpu_temp: None,
-                sensors: Vec::new(),
-            });
-        }
-    };
-
-    let cpu_temp = smc.get_cpu_temperature().ok();
-    let gpu_temp = smc.get_gpu_temperature().ok();
-    let sensors = smc.get_all_temperatures();
-
-    Ok(TemperatureMetrics {
-        cpu_temp,
-        gpu_temp,
-        sensors,
-    })
-}
-
 pub fn get_comprehensive_smc_metrics() -> Result<ComprehensiveSMCMetrics, Box<dyn std::error::Error>>
 {
     let mut smc = Smc::new()?;
@@ -1045,8 +1020,4 @@ pub fn get_comprehensive_smc_metrics() -> Result<ComprehensiveSMCMetrics, Box<dy
 pub fn get_all_smc_debug_data() -> Result<SmcDebugData, Box<dyn std::error::Error>> {
     let mut smc = Smc::new()?;
     smc.get_all_smc_data()
-}
-
-pub fn get_smc_connection() -> Result<Smc, Box<dyn std::error::Error>> {
-    Smc::new()
 }
