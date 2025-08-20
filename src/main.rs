@@ -3,6 +3,7 @@ mod dashboard;
 mod iokit;
 mod ioreport_perf;
 mod memory;
+mod time_graph;
 mod utils;
 
 use cpu::CpuMetrics;

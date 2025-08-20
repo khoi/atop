@@ -10,10 +10,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, Sparkline, Table},
+    widgets::{Block, Borders, Paragraph, Row, Table},
 };
 
-use crate::{cpu, iokit, ioreport_perf, memory};
+use crate::{cpu, iokit, ioreport_perf, memory, time_graph::TimeGraph};
 
 enum MetricEvent {
     Update(MetricData),
@@ -50,6 +50,7 @@ struct DashboardState {
     ecpu_usage_history: VecDeque<u64>, // E-CPU usage 0-100
     pcpu_usage_history: VecDeque<u64>, // P-CPU usage 0-100
     gpu_usage_history: VecDeque<u64>,  // GPU usage 0-100
+    cpu_usage_history: VecDeque<u64>,  // Combined CPU usage 0-100
 }
 
 impl DashboardState {
@@ -70,6 +71,7 @@ impl DashboardState {
             ecpu_usage_history: VecDeque::with_capacity(MAX_HISTORY),
             pcpu_usage_history: VecDeque::with_capacity(MAX_HISTORY),
             gpu_usage_history: VecDeque::with_capacity(MAX_HISTORY),
+            cpu_usage_history: VecDeque::with_capacity(MAX_HISTORY),
         }
     }
 
@@ -117,6 +119,10 @@ impl DashboardState {
             self.gpu_usage_history
                 .push_front((perf.gpu_usage.1 * 100.0) as u64);
 
+            // Calculate combined CPU usage (weighted average of E and P cores)
+            let combined_cpu = ((perf.ecpu_usage.1 + perf.pcpu_usage.1) / 2.0 * 100.0) as u64;
+            self.cpu_usage_history.push_front(combined_cpu);
+
             if self.ecpu_freq_history.len() > MAX_HISTORY {
                 self.ecpu_freq_history.pop_back();
                 self.pcpu_freq_history.pop_back();
@@ -124,12 +130,9 @@ impl DashboardState {
                 self.ecpu_usage_history.pop_back();
                 self.pcpu_usage_history.pop_back();
                 self.gpu_usage_history.pop_back();
+                self.cpu_usage_history.pop_back();
             }
         }
-    }
-
-    fn get_sparkline_data(&self, history: &VecDeque<u64>) -> Vec<u64> {
-        history.iter().cloned().collect()
     }
 }
 
@@ -297,26 +300,32 @@ impl Dashboard {
         let content_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(7), // CPU & Memory
-                Constraint::Length(5), // Power
-                Constraint::Min(8),    // Performance details
+                Constraint::Length(7), // CPU info text
+                Constraint::Length(8), // CPU Usage Graph
+                Constraint::Length(8), // Memory Graph
+                Constraint::Length(8), // Frequency Graphs
+                Constraint::Length(8), // Power Graphs
+                Constraint::Min(8),    // Performance table
             ])
             .split(chunks[1]);
 
-        // CPU & Memory Row
-        let top_row = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(content_chunks[0]);
+        // CPU info text
+        self.render_cpu_info(frame, content_chunks[0]);
 
-        self.render_cpu_info(frame, top_row[0]);
-        self.render_memory_info(frame, top_row[1]);
+        // CPU Usage Graph
+        self.render_cpu_graph(frame, content_chunks[1]);
 
-        // Power Metrics
-        self.render_power_info(frame, content_chunks[1]);
+        // Memory Graph
+        self.render_memory_info(frame, content_chunks[2]);
 
-        // Performance Details
-        self.render_performance_table(frame, content_chunks[2]);
+        // Frequency Graphs
+        self.render_frequency_graphs(frame, content_chunks[3]);
+
+        // Power Graphs
+        self.render_power_info(frame, content_chunks[4]);
+
+        // Performance Table
+        self.render_performance_table(frame, content_chunks[5]);
 
         // ==============================================================================
         // Footer with Controls
@@ -385,21 +394,21 @@ impl Dashboard {
         if let Some(ref mem) = self.state.current_memory {
             let total_gb = mem.ram_total as f64 / 1_073_741_824.0;
             let used_gb = mem.ram_usage as f64 / 1_073_741_824.0;
+            let usage_percent = (mem.ram_usage as f64 / mem.ram_total as f64 * 100.0) as u64;
 
-            let data = self.state.get_sparkline_data(&self.state.memory_history);
-            let max_mem = *data.iter().max().unwrap_or(&mem.ram_total);
-
-            let sparkline = Sparkline::default()
+            let graph = TimeGraph::new(&self.state.memory_history)
+                .max(mem.ram_total)
+                .style(Style::default().fg(Color::Blue))
                 .block(
                     Block::default()
-                        .title(format!(" Memory: {:.1}/{:.1} GB ", used_gb, total_gb))
+                        .title(format!(
+                            " Memory: {:.1}/{:.1} GB ({}%) ",
+                            used_gb, total_gb, usage_percent
+                        ))
                         .borders(Borders::ALL),
-                )
-                .data(&data)
-                .max(max_mem)
-                .style(Style::default().fg(Color::Blue));
+                );
 
-            frame.render_widget(sparkline, area);
+            frame.render_widget(graph, area);
         } else {
             let loading = Paragraph::new("Loading...")
                 .block(Block::default().title(" Memory ").borders(Borders::ALL));
@@ -408,52 +417,62 @@ impl Dashboard {
     }
 
     fn render_power_info(&self, frame: &mut Frame, area: Rect) {
-        // Split area into 3 columns for CPU, GPU, ANE power sparklines
+        // Split area into 4 sections: Total, CPU, GPU, ANE power
         let power_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(33),
-                Constraint::Percentage(33),
-                Constraint::Percentage(34),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
             ])
             .split(area);
 
         if let Some(ref power) = self.state.current_power {
-            // CPU Power Sparkline
-            let cpu_data = self.state.get_sparkline_data(&self.state.cpu_power_history);
-            let cpu_sparkline = Sparkline::default()
+            // Total Power Graph
+            let max_power = 50000; // 50W max for display
+            let total_graph = TimeGraph::new(&self.state.total_power_history)
+                .max(max_power as u64)
+                .style(Style::default().fg(Color::White))
+                .block(
+                    Block::default()
+                        .title(format!(" Total: {:.2}W ", power.all_power))
+                        .borders(Borders::ALL),
+                );
+            frame.render_widget(total_graph, power_chunks[0]);
+
+            // CPU Power Graph
+            let cpu_graph = TimeGraph::new(&self.state.cpu_power_history)
+                .max(max_power as u64)
+                .style(Style::default().fg(Color::Red))
                 .block(
                     Block::default()
                         .title(format!(" CPU: {:.2}W ", power.cpu_power))
                         .borders(Borders::ALL),
-                )
-                .data(&cpu_data)
-                .style(Style::default().fg(Color::Red));
-            frame.render_widget(cpu_sparkline, power_chunks[0]);
+                );
+            frame.render_widget(cpu_graph, power_chunks[1]);
 
-            // GPU Power Sparkline
-            let gpu_data = self.state.get_sparkline_data(&self.state.gpu_power_history);
-            let gpu_sparkline = Sparkline::default()
+            // GPU Power Graph
+            let gpu_graph = TimeGraph::new(&self.state.gpu_power_history)
+                .max(max_power as u64)
+                .style(Style::default().fg(Color::Magenta))
                 .block(
                     Block::default()
                         .title(format!(" GPU: {:.2}W ", power.gpu_power))
                         .borders(Borders::ALL),
-                )
-                .data(&gpu_data)
-                .style(Style::default().fg(Color::Magenta));
-            frame.render_widget(gpu_sparkline, power_chunks[1]);
+                );
+            frame.render_widget(gpu_graph, power_chunks[2]);
 
-            // ANE Power Sparkline
-            let ane_data = self.state.get_sparkline_data(&self.state.ane_power_history);
-            let ane_sparkline = Sparkline::default()
+            // ANE Power Graph
+            let ane_graph = TimeGraph::new(&self.state.ane_power_history)
+                .max(max_power as u64)
+                .style(Style::default().fg(Color::Yellow))
                 .block(
                     Block::default()
                         .title(format!(" ANE: {:.2}W ", power.ane_power))
                         .borders(Borders::ALL),
-                )
-                .data(&ane_data)
-                .style(Style::default().fg(Color::Yellow));
-            frame.render_widget(ane_sparkline, power_chunks[2]);
+                );
+            frame.render_widget(ane_graph, power_chunks[3]);
         } else {
             let no_data = Paragraph::new("Power metrics not available")
                 .block(Block::default().title(" Power ").borders(Borders::ALL));
@@ -500,6 +519,91 @@ impl Dashboard {
             let no_data = Paragraph::new("Performance metrics not available").block(
                 Block::default()
                     .title(" Performance ")
+                    .borders(Borders::ALL),
+            );
+            frame.render_widget(no_data, area);
+        }
+    }
+
+    fn render_cpu_graph(&self, frame: &mut Frame, area: Rect) {
+        let current_usage = if let Some(ref perf) = self.state.current_performance {
+            ((perf.ecpu_usage.1 + perf.pcpu_usage.1) / 2.0 * 100.0) as u64
+        } else {
+            0
+        };
+
+        let graph = TimeGraph::new(&self.state.cpu_usage_history)
+            .max(100)
+            .style(Style::default().fg(Color::Cyan))
+            .block(
+                Block::default()
+                    .title(format!(" CPU Usage: {}% ", current_usage))
+                    .borders(Borders::ALL),
+            );
+
+        frame.render_widget(graph, area);
+    }
+
+    fn render_frequency_graphs(&self, frame: &mut Frame, area: Rect) {
+        // Split into 3 sections for E-CPU, P-CPU, GPU frequencies
+        let freq_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+            ])
+            .split(area);
+
+        if let Some(ref perf) = self.state.current_performance {
+            // E-CPU Frequency Graph
+            let ecpu_graph = TimeGraph::new(&self.state.ecpu_freq_history)
+                .max(4000) // 4000 MHz max
+                .style(Style::default().fg(Color::Green))
+                .block(
+                    Block::default()
+                        .title(format!(
+                            " E-CPU: {} MHz ({:.0}%) ",
+                            perf.ecpu_usage.0,
+                            perf.ecpu_usage.1 * 100.0
+                        ))
+                        .borders(Borders::ALL),
+                );
+            frame.render_widget(ecpu_graph, freq_chunks[0]);
+
+            // P-CPU Frequency Graph
+            let pcpu_graph = TimeGraph::new(&self.state.pcpu_freq_history)
+                .max(4000) // 4000 MHz max
+                .style(Style::default().fg(Color::Cyan))
+                .block(
+                    Block::default()
+                        .title(format!(
+                            " P-CPU: {} MHz ({:.0}%) ",
+                            perf.pcpu_usage.0,
+                            perf.pcpu_usage.1 * 100.0
+                        ))
+                        .borders(Borders::ALL),
+                );
+            frame.render_widget(pcpu_graph, freq_chunks[1]);
+
+            // GPU Frequency Graph
+            let gpu_graph = TimeGraph::new(&self.state.gpu_freq_history)
+                .max(2000) // 2000 MHz max for GPU
+                .style(Style::default().fg(Color::Magenta))
+                .block(
+                    Block::default()
+                        .title(format!(
+                            " GPU: {} MHz ({:.0}%) ",
+                            perf.gpu_usage.0,
+                            perf.gpu_usage.1 * 100.0
+                        ))
+                        .borders(Borders::ALL),
+                );
+            frame.render_widget(gpu_graph, freq_chunks[2]);
+        } else {
+            let no_data = Paragraph::new("Frequency data not available").block(
+                Block::default()
+                    .title(" Frequencies ")
                     .borders(Borders::ALL),
             );
             frame.render_widget(no_data, area);
