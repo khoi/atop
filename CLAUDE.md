@@ -80,6 +80,7 @@ cargo fmt       # Format code
 - The sleep duration IS the interval parameter
 - Total time per sample = interval + overhead (~5-10ms for memory/CPU collection)
 
-## Developmetn Guidelines
+## Development Guidelines
 
+- Use `cargo add` to add new dependencies instead of modifying `Cargo.toml` directly.
 - Remove all dead code, unused variables.
