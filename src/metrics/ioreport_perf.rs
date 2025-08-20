@@ -1,4 +1,4 @@
-use crate::utils::{cf_dict_get_array, cf_string, cf_string_to_rust};
+use crate::utils::iokit_utils::{cf_dict_get_array, cf_string, cf_string_to_rust};
 use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex};
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType, kCFAllocatorDefault};
 use core_foundation::dictionary::{
@@ -225,10 +225,10 @@ fn parse_sample(data: CFDictionaryRef) -> PerformanceSample {
     let mut pcpu_usages = Vec::new();
 
     // Get CPU frequency lists from our existing cpu module
-    let cpu_info = crate::cpu::get_cpu_info().unwrap_or_default();
+    let cpu_info = crate::metrics::cpu::get_cpu_info().unwrap_or_default();
     let ecpu_freqs = cpu_info.ecpu_freqs_mhz;
     let pcpu_freqs = cpu_info.pcpu_freqs_mhz;
-    let gpu_freqs = crate::cpu::get_gpu_freqs().unwrap_or_default();
+    let gpu_freqs = crate::metrics::cpu::get_gpu_freqs().unwrap_or_default();
 
     // Parse IOReport channels
     if let Ok(items) = cf_dict_get_array(data, "IOReportChannels") {

@@ -13,7 +13,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Row, Table},
 };
 
-use crate::{cpu, iokit, ioreport_perf, memory, time_graph::TimeGraph};
+use crate::metrics::{self, ioreport_perf, memory};
+use crate::ui::time_graph::TimeGraph;
 
 enum MetricEvent {
     Update(MetricData),
@@ -21,7 +22,7 @@ enum MetricEvent {
 
 struct MetricData {
     memory: memory::MemoryMetrics,
-    power: Option<iokit::PowerMetrics>,
+    power: Option<metrics::PowerMetrics>,
     performance: Option<ioreport_perf::PerformanceSample>,
 }
 
@@ -29,11 +30,11 @@ const MAX_HISTORY: usize = 128;
 
 struct DashboardState {
     // CPU info (static, doesn't change)
-    cpu_metrics: Option<cpu::CpuMetrics>,
+    cpu_metrics: Option<metrics::CpuMetrics>,
 
     // Current values
     current_memory: Option<memory::MemoryMetrics>,
-    current_power: Option<iokit::PowerMetrics>,
+    current_power: Option<metrics::PowerMetrics>,
     current_performance: Option<ioreport_perf::PerformanceSample>,
 
     // Historical data for sparklines
@@ -157,7 +158,7 @@ impl Dashboard {
                 // Collect all metrics in one go
                 let memory = memory::get_memory_metrics().ok();
                 let power =
-                    iokit::get_power_metrics_with_interval(interval.as_millis() as u64).ok();
+                    metrics::get_power_metrics_with_interval(interval.as_millis() as u64).ok();
                 let performance = perf_monitor
                     .as_ref()
                     .map(|m| m.get_sample(interval.as_millis() as u64));
@@ -199,7 +200,7 @@ impl Dashboard {
 
         // Get CPU metrics once (they don't change)
         self.state.cpu_metrics = Some(
-            cpu::get_cpu_metrics()
+            metrics::get_cpu_metrics()
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?,
         );
 

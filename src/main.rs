@@ -1,15 +1,8 @@
-mod cpu;
-mod dashboard;
-mod iokit;
-mod ioreport_perf;
-mod memory;
-mod time_graph;
+mod metrics;
+mod ui;
 mod utils;
 
-use cpu::CpuMetrics;
-use iokit::PowerMetrics;
-use ioreport_perf::IOReportPerf;
-use memory::MemoryMetrics;
+use metrics::{CpuMetrics, IOReportPerf, MemoryMetrics, PowerMetrics};
 use serde::Serialize;
 use std::env;
 
@@ -22,7 +15,7 @@ struct FastSampler {
 impl FastSampler {
     fn new() -> Result<Self, String> {
         let cpu_metrics =
-            cpu::get_cpu_metrics().map_err(|e| format!("Error getting CPU metrics: {}", e))?;
+            metrics::get_cpu_metrics().map_err(|e| format!("Error getting CPU metrics: {}", e))?;
 
         let perf_monitor = IOReportPerf::new().ok();
 
@@ -34,14 +27,14 @@ impl FastSampler {
 
     fn sample(&self, interval_ms: u32) -> Result<SystemMetrics, String> {
         // Get real memory metrics (dynamic)
-        let memory_metrics = memory::get_memory_metrics()
+        let memory_metrics = metrics::get_memory_metrics()
             .map_err(|e| format!("Error getting memory metrics: {}", e))?;
 
         // Use cached CPU metrics
         let cpu_metrics = self.cpu_metrics.clone();
 
         // Get power metrics with the same interval
-        let power_metrics = iokit::get_power_metrics_with_interval(interval_ms as u64).ok();
+        let power_metrics = metrics::get_power_metrics_with_interval(interval_ms as u64).ok();
 
         // Get performance metrics using cached monitor
         let perf_sample = self
@@ -97,15 +90,15 @@ fn print_usage() {
 
 fn collect_metrics(interval_ms: u32) -> Result<SystemMetrics, String> {
     // Get real memory metrics
-    let memory_metrics =
-        memory::get_memory_metrics().map_err(|e| format!("Error getting memory metrics: {}", e))?;
+    let memory_metrics = metrics::get_memory_metrics()
+        .map_err(|e| format!("Error getting memory metrics: {}", e))?;
 
     // Get CPU metrics
     let cpu_metrics =
-        cpu::get_cpu_metrics().map_err(|e| format!("Error getting CPU metrics: {}", e))?;
+        metrics::get_cpu_metrics().map_err(|e| format!("Error getting CPU metrics: {}", e))?;
 
     // Get power metrics
-    let power_metrics = iokit::get_power_metrics_with_interval(interval_ms as u64).ok();
+    let power_metrics = metrics::get_power_metrics_with_interval(interval_ms as u64).ok();
 
     // Get performance metrics (CPU/GPU frequency and utilization)
     let perf_sample = if let Ok(perf_monitor) = IOReportPerf::new() {
@@ -134,7 +127,7 @@ fn main() {
 
     // If no arguments provided, launch the dashboard
     if args.len() == 1 {
-        let mut dashboard = match dashboard::Dashboard::new() {
+        let mut dashboard = match ui::Dashboard::new() {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("Error initializing dashboard: {}", e);

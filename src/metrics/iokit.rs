@@ -13,7 +13,9 @@ use std::marker::{PhantomData, PhantomPinned};
 use std::mem::MaybeUninit;
 use std::ptr::null;
 
-use crate::utils::{cf_dict_get_array, cf_dict_get_data, cf_string, cf_string_to_rust};
+use crate::utils::iokit_utils::{
+    cf_dict_get_array, cf_dict_get_data, cf_string, cf_string_to_rust,
+};
 
 // IOKit bindings
 #[link(name = "IOKit", kind = "framework")]
