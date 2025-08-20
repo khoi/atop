@@ -212,7 +212,7 @@ fn create_subscription(
     Ok(subs)
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct PerformanceSample {
     pub ecpu_usage: (u32, f32), // (freq_mhz, utilization_percent)
     pub pcpu_usage: (u32, f32), // (freq_mhz, utilization_percent)

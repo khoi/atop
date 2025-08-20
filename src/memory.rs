@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::error::Error;
 use std::mem;
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Clone)]
 pub struct MemoryMetrics {
     pub total: u64,      // total memory (ram + swap) in bytes
     pub ram_total: u64,  // bytes

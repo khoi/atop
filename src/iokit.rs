@@ -509,7 +509,7 @@ impl Drop for IOReport {
 }
 
 // Power metrics structure
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Clone)]
 pub struct PowerMetrics {
     pub cpu_power: f32,     // Watts
     pub gpu_power: f32,     // Watts

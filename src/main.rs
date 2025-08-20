@@ -1,4 +1,5 @@
 mod cpu;
+mod dashboard;
 mod iokit;
 mod ioreport_perf;
 mod memory;
@@ -78,6 +79,8 @@ fn print_usage() {
     eprintln!();
     eprintln!("System memory metrics monitoring tool");
     eprintln!();
+    eprintln!("When run without arguments, launches an interactive dashboard.");
+    eprintln!();
     eprintln!("OPTIONS:");
     eprintln!("    --json               Output as JSON");
     eprintln!(
@@ -85,6 +88,10 @@ fn print_usage() {
     );
     eprintln!("    --interval, -i <MS>  Update interval in milliseconds (default: 1000, min: 100)");
     eprintln!("    --help               Print this help message");
+    eprintln!();
+    eprintln!("DASHBOARD CONTROLS:");
+    eprintln!("    +/-                  Adjust refresh rate");
+    eprintln!("    q/ESC                Quit");
 }
 
 fn collect_metrics(interval_ms: u32) -> Result<SystemMetrics, String> {
@@ -123,6 +130,22 @@ fn collect_metrics(interval_ms: u32) -> Result<SystemMetrics, String> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    // If no arguments provided, launch the dashboard
+    if args.len() == 1 {
+        let mut dashboard = match dashboard::Dashboard::new() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Error initializing dashboard: {}", e);
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = dashboard.run() {
+            eprintln!("Error running dashboard: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
 
     // Parse arguments
     let mut json_output = false;
