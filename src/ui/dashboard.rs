@@ -273,27 +273,10 @@ impl Dashboard {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // Header
                 Constraint::Min(0),    // Content
                 Constraint::Length(3), // Footer
             ])
             .split(frame.area());
-
-        // ==============================================================================
-        // Header
-        // ==============================================================================
-        let header = Paragraph::new(vec![Line::from(vec![
-            Span::styled(
-                "atop",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" - macOS System Monitor"),
-        ])])
-        .block(Block::default().borders(Borders::ALL))
-        .alignment(Alignment::Center);
-        frame.render_widget(header, chunks[0]);
 
         // ==============================================================================
         // Main Content Area
@@ -308,7 +291,7 @@ impl Dashboard {
                 Constraint::Length(8), // Power Graphs
                 Constraint::Min(8),    // Performance table
             ])
-            .split(chunks[1]);
+            .split(chunks[0]);
 
         // CPU info text
         self.render_cpu_info(frame, content_chunks[0]);
@@ -339,7 +322,7 @@ impl Dashboard {
             .block(Block::default().borders(Borders::ALL))
             .alignment(Alignment::Center)
             .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(footer, chunks[2]);
+        frame.render_widget(footer, chunks[1]);
     }
 
     fn render_cpu_info(&self, frame: &mut Frame, area: Rect) {
