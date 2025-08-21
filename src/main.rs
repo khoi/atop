@@ -10,6 +10,7 @@ use std::env;
 struct FastSampler {
     cpu_metrics: CpuMetrics,
     perf_monitor: Option<IOReportPerf>,
+    power_monitor: Option<metrics::iokit::IOReport>,
 }
 
 impl FastSampler {
@@ -19,9 +20,13 @@ impl FastSampler {
 
         let perf_monitor = IOReportPerf::new().ok();
 
+        // Create IOReport instance once and reuse it
+        let power_monitor = metrics::iokit::IOReport::new(vec![("Energy Model", None)]).ok();
+
         Ok(Self {
             cpu_metrics,
             perf_monitor,
+            power_monitor,
         })
     }
 
@@ -33,8 +38,11 @@ impl FastSampler {
         // Use cached CPU metrics
         let cpu_metrics = self.cpu_metrics.clone();
 
-        // Get power metrics with the same interval
-        let power_metrics = metrics::get_power_metrics_with_interval(interval_ms as u64).ok();
+        // Get power metrics using cached IOReport instance
+        let power_metrics = self
+            .power_monitor
+            .as_ref()
+            .and_then(|m| metrics::get_power_metrics_from_sample(m, interval_ms as u64).ok());
 
         // Get performance metrics using cached monitor
         let perf_sample = self
