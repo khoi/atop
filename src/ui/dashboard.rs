@@ -154,6 +154,8 @@ impl Dashboard {
         let interval_clone = Arc::clone(&refresh_interval);
         thread::spawn(move || {
             let perf_monitor = ioreport_perf::IOReportPerf::new().ok();
+            // Create IOReport instance once and reuse it
+            let power_monitor = metrics::iokit::IOReport::new(vec![("Energy Model", None)]).ok();
 
             loop {
                 // Read the current interval from the shared RwLock
@@ -161,8 +163,9 @@ impl Dashboard {
 
                 // Collect all metrics in one go
                 let memory = memory::get_memory_metrics().ok();
-                let power =
-                    metrics::get_power_metrics_with_interval(interval.as_millis() as u64).ok();
+                let power = power_monitor.as_ref().and_then(|m| {
+                    metrics::get_power_metrics_from_sample(m, interval.as_millis() as u64).ok()
+                });
                 let performance = perf_monitor
                     .as_ref()
                     .map(|m| m.get_sample(interval.as_millis() as u64));

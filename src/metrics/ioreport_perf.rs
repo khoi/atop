@@ -6,7 +6,8 @@ use core_foundation::dictionary::{
 };
 #[allow(unused_imports)]
 use core_foundation::number::{CFNumberCreate, CFNumberRef, kCFNumberSInt32Type};
-use core_foundation::string::CFStringRef;
+use core_foundation::string::{CFStringCompare, CFStringRef};
+use core_foundation_sys::base::CFComparisonResult;
 use std::ffi::c_void;
 use std::ptr::null;
 
@@ -237,23 +238,20 @@ fn parse_sample(data: CFDictionaryRef) -> PerformanceSample {
         for i in 0..count {
             let item = unsafe { CFArrayGetValueAtIndex(items, i) } as CFDictionaryRef;
 
-            let group = get_channel_group(item);
-            let subgroup = get_channel_subgroup(item);
-            let channel = get_channel_name(item);
-
-            // CPU Core Performance States
-            if group == "CPU Stats" && subgroup == "CPU Core Performance States" {
-                if channel.contains("ECPU") {
+            // Check group and subgroup without allocating strings
+            if is_channel_group(item, "CPU Stats")
+                && is_channel_subgroup(item, "CPU Core Performance States")
+            {
+                if is_channel_name_contains(item, "ECPU") {
                     ecpu_usages.push(calc_freq(item, &ecpu_freqs));
-                } else if channel.contains("PCPU") {
+                } else if is_channel_name_contains(item, "PCPU") {
                     pcpu_usages.push(calc_freq(item, &pcpu_freqs));
                 }
             }
-
             // GPU Performance States
-            if group == "GPU Stats"
-                && subgroup == "GPU Performance States"
-                && channel == "GPUPH"
+            else if is_channel_group(item, "GPU Stats")
+                && is_channel_subgroup(item, "GPU Performance States")
+                && is_channel_name(item, "GPUPH")
                 && !gpu_freqs.is_empty()
             {
                 // Skip the first frequency (idle state)
@@ -280,29 +278,47 @@ fn parse_sample(data: CFDictionaryRef) -> PerformanceSample {
     sample
 }
 
-fn get_channel_group(item: CFDictionaryRef) -> String {
+// Helper functions that avoid string allocations
+fn is_channel_group(item: CFDictionaryRef, expected: &str) -> bool {
     let group = unsafe { IOReportChannelGetGroup(item) };
     if group.is_null() {
-        String::new()
-    } else {
-        cf_string_to_rust(group)
+        return false;
+    }
+    // Compare directly without allocating a new String
+    let cf_expected = cf_string(expected);
+    unsafe {
+        CFStringCompare(group, cf_expected.as_concrete_TypeRef(), 0) == CFComparisonResult::EqualTo
     }
 }
 
-fn get_channel_subgroup(item: CFDictionaryRef) -> String {
+fn is_channel_subgroup(item: CFDictionaryRef, expected: &str) -> bool {
     let subgroup = unsafe { IOReportChannelGetSubGroup(item) };
     if subgroup.is_null() {
-        String::new()
-    } else {
-        cf_string_to_rust(subgroup)
+        return false;
+    }
+    let cf_expected = cf_string(expected);
+    unsafe {
+        CFStringCompare(subgroup, cf_expected.as_concrete_TypeRef(), 0)
+            == CFComparisonResult::EqualTo
     }
 }
 
-fn get_channel_name(item: CFDictionaryRef) -> String {
+fn is_channel_name(item: CFDictionaryRef, expected: &str) -> bool {
     let name = unsafe { IOReportChannelGetChannelName(item) };
     if name.is_null() {
-        String::new()
-    } else {
-        cf_string_to_rust(name)
+        return false;
     }
+    let cf_expected = cf_string(expected);
+    unsafe {
+        CFStringCompare(name, cf_expected.as_concrete_TypeRef(), 0) == CFComparisonResult::EqualTo
+    }
+}
+
+fn is_channel_name_contains(item: CFDictionaryRef, substring: &str) -> bool {
+    let name = unsafe { IOReportChannelGetChannelName(item) };
+    if name.is_null() {
+        return false;
+    }
+    // We still need to allocate here for contains check, but at least it's only for matches
+    cf_string_to_rust(name).contains(substring)
 }

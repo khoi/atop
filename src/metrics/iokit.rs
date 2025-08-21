@@ -522,13 +522,11 @@ pub struct PowerMetrics {
     pub sys_power: f32,     // Total system power
 }
 
-// Collect power metrics using IOReport with custom interval
-pub fn get_power_metrics_with_interval(
+// Collect power metrics from an existing IOReport instance
+pub fn get_power_metrics_from_sample(
+    ioreport: &IOReport,
     interval_ms: u64,
 ) -> Result<PowerMetrics, Box<dyn std::error::Error>> {
-    // Create IOReport instance for Energy Model group
-    let ioreport = IOReport::new(vec![("Energy Model", None)])?;
-
     // Take a sample with specified interval to get power readings
     let sample = ioreport.sample_power(interval_ms)?;
     let actual_duration_ms = sample.duration_ms();
@@ -569,4 +567,12 @@ pub fn get_power_metrics_with_interval(
     metrics.sys_power = metrics.all_power;
 
     Ok(metrics)
+}
+
+// Legacy function - creates new IOReport instance each time (can cause memory leak if called repeatedly)
+pub fn get_power_metrics_with_interval(
+    interval_ms: u64,
+) -> Result<PowerMetrics, Box<dyn std::error::Error>> {
+    let ioreport = IOReport::new(vec![("Energy Model", None)])?;
+    get_power_metrics_from_sample(&ioreport, interval_ms)
 }
