@@ -146,7 +146,7 @@ pub struct Dashboard {
 
 impl Dashboard {
     pub fn new() -> io::Result<Self> {
-        let (tx, rx) = mpsc::channel::<MetricEvent>();
+        let (tx, rx) = mpsc::sync_channel::<MetricEvent>(10);
         let refresh_interval = Arc::new(RwLock::new(Duration::from_millis(1000)));
 
         // Spawn metric collection thread that runs continuously
@@ -168,11 +168,23 @@ impl Dashboard {
                     .map(|m| m.get_sample(interval.as_millis() as u64));
 
                 if let Some(mem) = memory {
-                    let _ = tx_clone.send(MetricEvent::Update(MetricData {
+                    // Use try_send to avoid blocking. If channel is full, discard the old message
+                    use std::sync::mpsc::TrySendError;
+                    match tx_clone.try_send(MetricEvent::Update(MetricData {
                         memory: mem,
                         power,
                         performance,
-                    }));
+                    })) {
+                        Ok(_) => {}
+                        Err(TrySendError::Full(_)) => {
+                            // Channel is full, discard this metric update
+                            // The UI will get the next fresh one
+                        }
+                        Err(TrySendError::Disconnected(_)) => {
+                            // Receiver has been dropped, exit thread
+                            break;
+                        }
+                    }
                 }
 
                 // Sleep for the interval duration
