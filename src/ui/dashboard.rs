@@ -304,7 +304,7 @@ impl Dashboard {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(7), // CPU info text
-                Constraint::Length(8), // CPU Usage Graph
+                Constraint::Length(8), // CPU Usage Graphs (P/E cores)
                 Constraint::Length(8), // Memory Graph
                 Constraint::Length(8), // Frequency Graphs
                 Constraint::Length(8), // Power Graphs
@@ -315,8 +315,8 @@ impl Dashboard {
         // CPU info text
         self.render_cpu_info(frame, content_chunks[0]);
 
-        // CPU Usage Graph
-        self.render_cpu_graph(frame, content_chunks[1]);
+        // CPU Usage Graphs (P/E cores)
+        self.render_cpu_usage_graphs(frame, content_chunks[1]);
 
         // Memory Graph
         self.render_memory_info(frame, content_chunks[2]);
@@ -528,23 +528,42 @@ impl Dashboard {
         }
     }
 
-    fn render_cpu_graph(&self, frame: &mut Frame, area: Rect) {
-        let current_usage = if let Some(ref perf) = self.state.current_performance {
-            ((perf.ecpu_usage.1 + perf.pcpu_usage.1) / 2.0 * 100.0) as u64
+    fn render_cpu_usage_graphs(&self, frame: &mut Frame, area: Rect) {
+        // Split area into 2 sections for P-core and E-core usage
+        let cpu_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+
+        if let Some(ref perf) = self.state.current_performance {
+            // P-Core Usage Graph
+            let pcpu_usage = (perf.pcpu_usage.1 * 100.0) as u64;
+            let pcpu_graph = TimeGraph::new(&self.state.pcpu_usage_history)
+                .max(100)
+                .style(Style::default().fg(Color::Red))
+                .block(
+                    Block::default()
+                        .title(format!(" P-Cores: {}% ", pcpu_usage))
+                        .borders(Borders::ALL),
+                );
+            frame.render_widget(pcpu_graph, cpu_chunks[0]);
+
+            // E-Core Usage Graph
+            let ecpu_usage = (perf.ecpu_usage.1 * 100.0) as u64;
+            let ecpu_graph = TimeGraph::new(&self.state.ecpu_usage_history)
+                .max(100)
+                .style(Style::default().fg(Color::Green))
+                .block(
+                    Block::default()
+                        .title(format!(" E-Cores: {}% ", ecpu_usage))
+                        .borders(Borders::ALL),
+                );
+            frame.render_widget(ecpu_graph, cpu_chunks[1]);
         } else {
-            0
-        };
-
-        let graph = TimeGraph::new(&self.state.cpu_usage_history)
-            .max(100)
-            .style(Style::default().fg(Color::Cyan))
-            .block(
-                Block::default()
-                    .title(format!(" CPU Usage: {}% ", current_usage))
-                    .borders(Borders::ALL),
-            );
-
-        frame.render_widget(graph, area);
+            let no_data = Paragraph::new("CPU usage data not available")
+                .block(Block::default().title(" CPU Usage ").borders(Borders::ALL));
+            frame.render_widget(no_data, area);
+        }
     }
 
     fn render_frequency_graphs(&self, frame: &mut Frame, area: Rect) {
