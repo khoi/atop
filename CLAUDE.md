@@ -51,6 +51,7 @@ atop
 ### Dashboard Architecture
 
 The dashboard runs two parallel threads:
+
 1. **Metric Collection Thread**: Continuously samples metrics at the specified interval
 2. **UI Thread**: Renders the TUI and handles keyboard events
 
@@ -65,6 +66,16 @@ cargo build --release           # Optimized build (required for performance test
 cargo run                       # Launch interactive dashboard
 cargo run -- --json             # Single JSON output
 cargo run -- --json -s 10 -i 500  # 10 samples at 500ms intervals
+```
+
+### Install
+
+```bash
+make install                     # Builds release and installs `atop`
+# Behavior:
+# - Builds with `cargo build --release`
+# - Installs to $HOME/.local/bin (created if missing)
+# - Warns if destination is not in PATH
 ```
 
 ### Dashboard Mode
